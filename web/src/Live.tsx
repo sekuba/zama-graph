@@ -19,14 +19,14 @@ import {
 
 /** What each filter shows. The tabs come first; the others are numbers of the scoreboard */
 const FILTERS: Record<LiveFilter, [label: string, title: string]> = {
-  all: ['all', 'the newest wraps, transfers and unwraps'],
+  all: ['all', 'every wrap, transfer and unwrap'],
   linked: ['linked', 'unwraps provably funded by one depositor'],
-  pinned: ['pinned', 'transfers whose hidden amount the data pins'],
+  pinned: ['exact', 'transfers whose exact amount is known'],
   unwraps: ['unwraps', 'every unwrap, with where it came from'],
-  named: ['named', 'accounts with an ENS or GNS name'],
+  named: ['named', 'what accounts with an ENS or GNS name did'],
   self: ['linked to itself', 'unwraps provably funded by their own wraps'],
   other: ['linked to another', 'unwraps provably funded by one other address'],
-  pool: ['via pool', 'unwraps partly funded through a pool'],
+  pool: ['through a pool', 'unwraps partly funded through a pool'],
   several: ['several depositors', 'unwraps several depositors can have funded'],
   'set-2': ['2 depositors', 'unwraps exactly two depositors can have funded'],
   'set-3-5': ['3–5 depositors', 'unwraps 3 to 5 depositors can have funded'],
@@ -73,8 +73,8 @@ export function Live({ filter }: { filter: LiveFilter }) {
           Zama hides amounts, sometimes. <mark>It never hides links.</mark>
         </h2>
         <p className="lead">
-          Encryption hides values, not structure: every transfer names both
-          sides, every encrypted amount is a public formula over earlier ones.{' '}
+          Encryption hides amounts, not links: every transfer names both sides,
+          and every encrypted amount is a public formula over earlier ones.{' '}
           <a href="#about" className="underline">
             Method
           </a>
@@ -190,14 +190,14 @@ function Scoreboard({ s, filter }: { s: Stats; filter: LiveFilter }) {
         <Stat
           value={pct(t.exact, t.total)}
           href="#pinned"
-          label={`amounts pinned, of ${plural(t.total, 'transfer')}`}
+          label={`of ${plural(t.total, 'transfer')} with the exact amount known`}
           mark
         />
         <Split
           total={t.total}
           filter={filter}
           parts={[
-            [t.exact, 'pinned', 'var(--zama)', 'pinned'],
+            [t.exact, 'exact', 'var(--zama)', 'pinned'],
             [t.narrow, 'within 2×', 'var(--bounded)'],
             [t.bounded, 'bounded', 'var(--axis)'],
           ]}
@@ -208,9 +208,9 @@ function Scoreboard({ s, filter }: { s: Stats; filter: LiveFilter }) {
               <Fact
                 f="pending"
                 filter={filter}
-                text={plural(u.pendingKnown, 'unfinalized unwrap')}
+                text={plural(u.pendingKnown, 'pending unwrap')}
               />{' '}
-              known anyway
+              whose amount is known already
             </li>
           )}
           {u.pendingDecryptable > 0 && (
@@ -230,7 +230,7 @@ function Scoreboard({ s, filter }: { s: Stats; filter: LiveFilter }) {
                 filter={filter}
                 text={`${n(s.router.revealed)} of ${n(s.router.deposits)}`}
               />{' '}
-              router deposits reveal the vault
+              deposits through the vault router reveal which vault they went to
             </li>
           )}
         </Facts>
@@ -398,7 +398,7 @@ function ByToken({ s }: { s: Stats }) {
             <th className="text-right">Wraps</th>
             <th className="text-right">Unwraps</th>
             <th className="text-right">Transfers</th>
-            <th className="text-right">Amounts pinned</th>
+            <th className="text-right">Exact amount known</th>
             <th
               className="text-right"
               title="accounts whose current balance is not known to be zero"
@@ -422,7 +422,7 @@ function ByToken({ s }: { s: Stats }) {
               <td className="mono text-right" data-label="transfers">
                 {t.transfers.toLocaleString('en-US')}
               </td>
-              <td className="mono text-right" data-label="pinned">
+              <td className="mono text-right" data-label="exact amount known">
                 {t.transfers
                   ? `${t.exact.toLocaleString('en-US')} (${pct(t.exact, t.transfers)})`
                   : ''}
@@ -460,7 +460,7 @@ function Feed({ events, now }: { events: LiveEvent[]; now: number }) {
           <th>From</th>
           <th>To</th>
           <th className="text-right">Amount</th>
-          <th>Notes</th>
+          <th>What is known</th>
         </tr>
       </thead>
       <tbody>
@@ -577,7 +577,7 @@ function GroupRow({
         {boundary && <Amount a={boundary.amount} />}
       </td>
       <td className="wide text-ink-2">
-        {pinned.length}/{g.length} pinned
+        {pinned.length} of {g.length} exact
         {zero > 0 && `, ${zero} zero`}
         {picked && (
           <>
@@ -602,9 +602,9 @@ function GroupRow({
 
 /** What the public data says about an event, in a word or two */
 function Says({ e }: { e: LiveEvent }) {
-  if (e.kind === 'wrap') return <>clear</>
+  if (e.kind === 'wrap') return <>public</>
   if (e.kind === 'transfer') {
-    if (exact(e.amount)) return e.amount.lo === '0' ? <>zero</> : <>pinned</>
+    if (exact(e.amount)) return e.amount.lo === '0' ? <>zero</> : <>exact</>
     return visibility(e.amount) === 'hidden' ? <>hidden</> : <>bounded</>
   }
   const t = e.trace
@@ -625,7 +625,7 @@ function Says({ e }: { e: LiveEvent }) {
         {t.via.length > 0 && (
           <span title="through a pool that only returns a member its own funds">
             {' '}
-            <Muted>via pool</Muted>
+            <Muted>through a pool</Muted>
           </span>
         )}
       </>

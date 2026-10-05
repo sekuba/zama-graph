@@ -115,7 +115,7 @@ function Balances({ s }: { s: AddressSummary }) {
         {boundary.length > 0 &&
           ` · ${publicBoundary}/${boundary.length} wrap and unwrap amounts`}
         {transfers.length > 0 &&
-          ` · ${pinned}/${transfers.length} transfer amounts pinned`}
+          ` · ${pinned}/${transfers.length} transfer amounts known exactly`}
         {` · ${known}/${s.balances.length} balances known`}
       </div>
       <div className="grid gap-x-6 gap-y-3 md:grid-cols-2">

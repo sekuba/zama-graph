@@ -29,6 +29,12 @@ export function About({ status }: { status: Status | undefined }) {
             encrypted amount is a public formula over constants, inputs and
             earlier handles.
           </li>
+          <li>
+            A transfer never fails for lack of funds: if the sender asks for
+            more than it holds, the contract sends 0 instead, because failing
+            would reveal the balance. So the amount asked for says nothing on
+            its own, but what actually moved is never more than the sender held.
+          </li>
         </Points>
       </Section>
       <Section title="Amounts">
@@ -45,14 +51,22 @@ export function About({ status }: { status: Status | undefined }) {
             Extra rules: <Code>kept + sent = balance</Code> per transfer; a
             branch is refined by its condition; <Code>x − x = 0</Code>; no
             balance exceeds supply; a batch unwraps exactly its total; a pool
-            that keeps an account per member returns no more than was paid in.
+            that keeps an account per member, and the vault router within a
+            transaction it starts empty, return no more than was paid in.
           </li>
           <li>
-            Sound: a pinned value is the only one the data allows.{' '}
+            Each token’s whole history as one network flow: every balance is
+            what came in minus what went out, never negative. Its largest and
+            smallest possible value bounds each amount and balance, solved
+            exactly; each bound it tightens comes with the balances and
+            transfers that pin it, checked to add up.
+          </li>
+          <li>
+            Sound: a known exact amount is the only one the data allows.{' '}
             {b &&
               `${b.ops.toLocaleString('en-US')} operations, ${b.contradictions} contradictions.`}{' '}
-            16 of 16 pinned pending unwraps matched the KMS (7 of 13
-            signatures).
+            16 of 16 pending unwraps with a known exact amount matched the KMS
+            (7 of 13 signatures).
           </li>
         </Points>
       </Section>

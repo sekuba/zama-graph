@@ -122,9 +122,7 @@ export function App() {
       {route.page === 'about' && <About status={status} />}
 
       <footer className="mt-6 text-xs text-muted">
-        Derived from Ethereum and the Zama Gateway only.{' '}
-        <span className="amt-derived">Highlighted</span> values were published
-        by nobody: the public data allows no other.
+        Derived from Ethereum and the Zama Gateway only.
       </footer>
     </div>
   )

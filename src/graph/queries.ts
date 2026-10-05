@@ -1,25 +1,32 @@
 import { all, type Db, getSync, handleHex, handleId, one } from '../db'
 import type { JsonRpc } from '../eth/rpc'
+import type { StoredWhy } from '../fhe/derive'
+import type { Cut } from '../fhe/flow'
 import {
   FheType,
   KNOWN,
   OP_NAMES,
-  type Op,
+  Op,
   TOPICS,
   TRUST,
   WILDCARD,
 } from '../protocol'
 import { ROUTER_LEGS, ROUTER_REVEALED } from './hubs'
 import { MAX64, NAMED, ZERO } from './model'
+import { storyOf } from './story'
 import { LINKS, SETS } from './traces'
 import type {
+  About,
   AccountInfo,
   AddressEvent,
   AddressSummary,
   Amount,
+  Because,
+  Branch,
   ClearSource,
   Delegation,
   HandleDetail,
+  InputSend,
   LinkedUnwrap,
   LiveEvent,
   LiveFilter,
@@ -33,6 +40,9 @@ import type {
   TxDetail,
   UnwrapDetail,
   UserDecryption,
+  WhyChain,
+  WhyStep,
+  WhyTerm,
 } from './types'
 
 /** Where a value was published, most authoritative first */
@@ -51,11 +61,15 @@ const SOURCES: ClearSource[] = [
 export function amounts(db: Db, ids: number[]): Map<number, Amount> {
   const out = new Map<number, Amount>()
   const unique = [...new Set(ids.filter((i) => i !== null && i !== undefined))]
-  const bound = db.prepare('select lo, hi from bound where handle = ?')
+  const bound = db.prepare(
+    'select lo, hi, lo_why, hi_why from bound where handle = ?',
+  )
   const clear = db.prepare('select source, value from clear where handle = ?')
   const wrapped = db.prepare('select amount from wrap where handle = ?')
   for (const id of unique) {
-    const b = bound.get(id) as { lo: string; hi: string } | undefined
+    const b = bound.get(id) as
+      | { lo: string; hi: string; lo_why: string | null; hi_why: string | null }
+      | undefined
     const published = clear.all(id) as { source: ClearSource; value: string }[]
     const source = SOURCES.find((s) => published.some((p) => p.source === s))
     const value = published.find((p) => p.source === source)?.value
@@ -69,10 +83,339 @@ export function amounts(db: Db, ids: number[]): Map<number, Amount> {
       const a: Amount = { lo: b?.lo ?? '0' }
       if (b && BigInt(b.hi) < MAX64) a.hi = b.hi
       if (b && b.lo === b.hi) a.source = 'inferred'
+      const lo = b && BigInt(b.lo) > 0n ? because(db, b.lo_why) : undefined
+      const hi = a.hi !== undefined ? because(db, b?.hi_why ?? null) : undefined
+      if (lo || hi) a.why = { lo, hi }
+      // a constant made into a handle: public, not derived
+      // (a condition's upper end, 1, is never narrowed: look at both)
+      const made = [lo, hi].some(
+        (w) => w?.step === 'forward' && w.op === 'trivial',
+      )
+      if (a.source === 'inferred' && made) {
+        a.source = 'trivial'
+      }
       out.set(id, a)
     }
   }
   return out
+}
+
+/** A stored step with its handles as hex, for the API */
+function because(db: Db, json: string | null): Because | undefined {
+  if (!json) return undefined
+  const w = JSON.parse(json) as StoredWhy
+  const hex = (id: number) => handleHex(db, [id]).get(id) ?? ''
+  switch (w.step) {
+    case 'forward':
+      return {
+        step: 'forward',
+        op: opName(w.kind),
+        at: w.at,
+        args: (w.args ?? []).map(hex),
+      }
+    case 'backward':
+      return {
+        step: 'backward',
+        op: opName(w.kind),
+        at: w.at,
+        result: hex(w.result),
+      }
+    case 'ledger': {
+      // the bounds alone: its own reason would explain it again, recursively
+      const b = one<{ lo: string; hi: string }>(
+        db,
+        'select lo, hi from bound where handle = ?',
+        w.balance,
+      )
+      return {
+        step: 'ledger',
+        as: w.as,
+        balance: hex(w.balance),
+        kept: hex(w.kept),
+        sent: hex(w.sent),
+        before: b
+          ? { lo: b.lo, hi: BigInt(b.hi) < MAX64 ? b.hi : undefined }
+          : undefined,
+      }
+    }
+    case 'equal':
+      return {
+        step: 'equal',
+        handle: hex(w.handle),
+        role: roleOf(db, w.handle) ?? undefined,
+      }
+    default:
+      return w
+  }
+}
+
+/**
+ * A chain for each end of a handle's range that no story explains: one
+ * for an exact value whose ends have the same reason, or a public one
+ */
+function whyChains(
+  db: Db,
+  id: number,
+  stories: HandleDetail['stories'],
+): WhyChain[] {
+  const a = amounts(db, [id]).get(id)
+  if (!a) return []
+  if (a.source && a.source !== 'inferred') {
+    return [{ side: 'both', steps: whyChain(db, id, 'hi') }]
+  }
+  const told = new Set(stories.map((s) => s.side))
+  const exact = a.hi !== undefined && a.lo === a.hi
+  if (exact && JSON.stringify(a.why?.lo) === JSON.stringify(a.why?.hi)) {
+    return told.size > 0
+      ? []
+      : [{ side: 'both', steps: whyChain(db, id, 'hi') }]
+  }
+  const chains = (['lo', 'hi'] as const)
+    .filter((side) => a.why?.[side] && !told.has(side))
+    .map((side) => ({ side, steps: whyChain(db, id, side) }))
+  // an exact value whose one chain is exact sums down to a public value
+  // needs no other: that chain proves both ends
+  const whole = exact && chains.find((c) => provesExact(c.steps))
+  return whole ? [{ side: 'both', steps: whole.steps }] : chains
+}
+
+/**
+ * Whether a chain pins a value from both sides: every step exact and
+ * computed only from exact values, down to a public one
+ */
+function provesExact(steps: WhyStep[]): boolean {
+  const exact = (a: Amount) => a.hi !== undefined && a.lo === a.hi
+  const last = steps.at(-1)
+  return (
+    last !== undefined &&
+    (last.because.step === 'wrap' || last.because.step === 'published') &&
+    steps.every(
+      (s) =>
+        exact(s.amount) &&
+        (s.because.step === 'equal' ||
+          s.because.step === 'wrap' ||
+          s.because.step === 'published' ||
+          (s.because.step === 'forward' &&
+            (s.args ?? []).every((t) => exact(t.amount)))),
+    )
+  )
+}
+
+/**
+ * The steps behind one end of a handle's range, each leading to the handle
+ * the next one explains, until public data (or eight steps)
+ */
+function whyChain(db: Db, start: number, side: 'lo' | 'hi'): WhyStep[] {
+  const steps: WhyStep[] = []
+  const seen = new Set<number>()
+  const id = (hex: string) => handleId(db, hex)
+  let h: number | undefined = start
+  while (h !== undefined && steps.length < 8 && !seen.has(h)) {
+    seen.add(h)
+    const amount = amounts(db, [h]).get(h)
+    if (!amount) break
+    const handle = handleHex(db, [h]).get(h) ?? ''
+    const role = roleOf(db, h)
+    const b = amount.why?.[side]
+    if (!b) {
+      // published values end the chain
+      if (amount.source && amount.source !== 'inferred') {
+        const because: Because =
+          amount.source === 'wrap' ? { step: 'wrap' } : { step: 'published' }
+        steps.push({ handle, amount, role, side, because })
+      }
+      break
+    }
+    const step: WhyStep = { handle, amount, role, side, because: b }
+    let next: number | undefined
+    switch (b.step) {
+      case 'ledger':
+        next = id(b.as === 'balance' ? b.kept : b.balance)
+        break
+      case 'equal':
+        next = id(b.handle)
+        step.branch = next === undefined ? undefined : branchOf(db, h, next)
+        break
+      case 'backward':
+        next = id(b.result)
+        if (b.op === 'select' && next !== undefined) {
+          step.branch = branchOf(db, h, next)
+        }
+        break
+      case 'flow':
+      case 'lp': {
+        const cut = flowCutOf(
+          db,
+          h,
+          side,
+          b.step === 'lp' ? 'lp_bound' : 'flow_bound',
+        )
+        if (!cut) break
+        step.cut = cut.view
+        next = cut.next
+        break
+      }
+      case 'forward': {
+        const ids = b.args.map(id).filter((a): a is number => a !== undefined)
+        const known = amounts(db, ids)
+        step.args = ids.map((a) => ({
+          handle: handleHex(db, [a]).get(a) ?? '',
+          amount: known.get(a) ?? { lo: '0' },
+          role: roleOf(db, a),
+        }))
+        // the operand that bounds it most: the widest one, conditions aside
+        const value = (a: number) => {
+          const k = known.get(a)
+          return side === 'hi' ? BigInt(k?.hi ?? MAX64) : BigInt(k?.lo ?? 0)
+        }
+        const operands = b.op === 'select' ? ids.slice(1) : ids
+        next = operands.sort((x, y) => (value(y) > value(x) ? 1 : -1))[0]
+        break
+      }
+    }
+    steps.push(step)
+    h = next
+  }
+  return steps
+}
+
+const COMPARE = [Op.Eq, Op.Ne, Op.Ge, Op.Gt, Op.Le, Op.Lt]
+
+function termOf(db: Db, h: number): WhyTerm {
+  return {
+    handle: handleHex(db, [h]).get(h) ?? '',
+    amount: amounts(db, [h]).get(h) ?? { lo: '0' },
+    role: roleOf(db, h),
+  }
+}
+
+/**
+ * The if/else with a known condition that makes `h` one value with
+ * another (`peer` when given): `h` is its result or the choice it took
+ */
+function branchOf(db: Db, h: number, peer?: number): Branch | undefined {
+  const selects = all<{
+    a: number | null
+    b: number | null
+    c: number | null
+    r: number
+  }>(
+    db,
+    `select a, b, c, r from op where kind = ? and r = ?
+     union all select a, b, c, r from op where kind = ? and b = ?
+     union all select a, b, c, r from op where kind = ? and c = ?
+     limit 50`,
+    Op.Select,
+    h,
+    Op.Select,
+    h,
+    Op.Select,
+    h,
+  )
+  for (const o of selects) {
+    if (o.a === null || o.b === null || o.c === null) continue
+    const cond = one<{
+      lo: string
+      hi: string
+      lo_why: string | null
+      hi_why: string | null
+    }>(db, 'select lo, hi, lo_why, hi_why from bound where handle = ?', o.a)
+    if (!cond || cond.lo !== cond.hi) continue
+    const holds = cond.lo !== '0'
+    const taken = holds ? o.b : o.c
+    const other = holds ? o.c : o.b
+    if (h !== o.r && h !== taken) continue
+    if (peer !== undefined && peer !== (h === o.r ? taken : o.r)) continue
+    const compare = one<{ kind: number }>(
+      db,
+      'select kind from op where r = ? order by block, log limit 1',
+      o.a,
+    )
+    const otherTerm = termOf(db, other)
+    const json = holds ? cond.lo_why : cond.hi_why
+    const w = json ? (JSON.parse(json) as StoredWhy) : undefined
+    let known: Branch['because'] = { step: 'other', why: null }
+    if (w?.step === 'backward' && w.result === o.r) {
+      known = { step: 'result' }
+    } else if (w?.step === 'forward' && COMPARE.includes(w.kind as Op)) {
+      const [block = 0, log = 0] = w.at.split(':').map(Number)
+      const c = one<{ a: number | null; b: number | null; k: string | null }>(
+        db,
+        'select a, b, k from op where block = ? and log = ?',
+        block,
+        log,
+      )
+      if (c?.a != null) {
+        known = {
+          step: 'compare',
+          op: opName(w.kind),
+          a: termOf(db, c.a),
+          b: c.b !== null ? termOf(db, c.b) : { clear: c.k ?? '0' },
+        }
+      }
+    } else if (json) {
+      known = { step: 'other', why: because(db, json) ?? null }
+    }
+    return {
+      cond: termOf(db, o.a),
+      holds,
+      taken: termOf(db, taken),
+      other: otherTerm,
+      result: termOf(db, o.r),
+      debit:
+        holds &&
+        compare?.kind === Op.Ge &&
+        otherTerm.amount.lo === '0' &&
+        otherTerm.amount.hi === '0',
+      because: known,
+    }
+  }
+  return undefined
+}
+
+/**
+ * The terms that pin a flow bound, largest first, the rest summed; and the
+ * handle the chain goes on with: the largest term
+ */
+function flowCutOf(
+  db: Db,
+  id: number,
+  side: 'lo' | 'hi',
+  /** flow_bound, or lp_bound: the same certificate */
+  table: 'flow_bound' | 'lp_bound' = 'flow_bound',
+): { view: NonNullable<WhyStep['cut']>; next: number | undefined } | undefined {
+  const row = one<{ cut: string | null; bound: string }>(
+    db,
+    `select ${side === 'lo' ? 'lo_cut cut, lo bound' : 'hi_cut cut, hi bound'}
+     from ${table} where handle = ?`,
+    id,
+  )
+  if (!row?.cut) return undefined
+  const cut = JSON.parse(row.cut) as Cut
+  const ids = [...cut.plus, ...cut.minus].filter((h) => h >= 0)
+  const known = amounts(db, ids)
+  const terms = (list: number[]) =>
+    list
+      .filter((h) => h >= 0)
+      .map((h) => ({
+        handle: handleHex(db, [h]).get(h) ?? '',
+        amount: known.get(h) ?? { lo: '0' },
+        role: roleOf(db, h),
+      }))
+  return {
+    view: {
+      plus: terms(cut.plus),
+      minus: terms(cut.minus),
+      morePlus: cut.morePlus,
+      moreMinus: cut.moreMinus,
+      total: row.bound,
+    },
+    next: cut.plus.find((h) => h >= 0),
+  }
+}
+
+function opName(kind: number): string {
+  return OP_NAMES[kind as Op] ?? String(kind)
 }
 
 function hexOf(db: Db, ids: (number | null)[]): Map<number, string> {
@@ -593,6 +936,66 @@ function userDecryptionsBy(
 }
 
 /** What a handle is in the token ledgers, in words */
+/** What a handle is: a transfer amount, a wrap, an unwrap or a balance */
+export function aboutOf(db: Db, id: number): About | null {
+  const sym = symbols(db)
+  const x = one<{ token: string; src: string; dst: string }>(
+    db,
+    'select token, src, dst from xfer where amount = ? limit 1',
+    id,
+  )
+  if (x) {
+    const symbol = sym.get(x.token) ?? '?'
+    if (x.src === ZERO) return { kind: 'wrap', symbol, to: x.dst }
+    if (x.dst === ZERO) return { kind: 'unwrap', symbol, from: x.src }
+    return { kind: 'transfer', symbol, from: x.src, to: x.dst }
+  }
+  const b = one<{ token: string; account: string }>(
+    db,
+    `select token, src account from xfer where src_bal = ?1
+     union all select token, dst account from xfer where dst_bal = ?1 limit 1`,
+    id,
+  )
+  if (b) {
+    return {
+      kind: 'balance',
+      symbol: sym.get(b.token) ?? '?',
+      account: b.account,
+    }
+  }
+  return null
+}
+
+/**
+ * The transfers an encrypted input was the requested amount of: a select
+ * that sends the input or a constant, and whether its condition is the
+ * balance check of ERC-7984 (`ge(balance, input)`)
+ */
+function inputSends(db: Db, id: number): InputSend[] {
+  const rows = all<{
+    r: number
+    cond: number
+    kind: number | null
+    b: number | null
+  }>(
+    db,
+    `select s.r, s.a cond, c.kind, c.b from op s left join op c on c.r = s.a
+     where s.kind = ?1 and s.b = ?2 and s.r in (select amount from xfer)`,
+    Op.Select,
+    id,
+  )
+  const known = amounts(
+    db,
+    rows.map((r) => r.r),
+  )
+  return rows.map((r) => ({
+    handle: handleHex(db, [r.r]).get(r.r) ?? '',
+    amount: known.get(r.r) ?? { lo: '0' },
+    about: aboutOf(db, r.r),
+    checked: r.kind === Op.Ge && r.b === id,
+  }))
+}
+
 export function roleOf(db: Db, id: number): string | null {
   const sym = symbols(db)
   const x = one<{ token: string; src: string; dst: string }>(
@@ -611,13 +1014,22 @@ export function roleOf(db: Db, id: number): string | null {
     'select token, src from xfer where src_bal = ? limit 1',
     id,
   )
-  if (bs) return `${sym.get(bs.token) ?? '?'} balance of ${bs.src}`
+  if (bs)
+    return `${sym.get(bs.token) ?? '?'} balance of ${bs.src} after sending`
   const bd = one<{ token: string; dst: string }>(
     db,
     'select token, dst from xfer where dst_bal = ? limit 1',
     id,
   )
-  if (bd) return `${sym.get(bd.token) ?? '?'} balance of ${bd.dst}`
+  if (bd) {
+    return `${sym.get(bd.token) ?? '?'} balance of ${bd.dst} after receiving`
+  }
+  const input = one<{ user: string }>(
+    db,
+    'select user from input where handle = ?',
+    id,
+  )
+  if (input) return `amount ${input.user} asked for, an encrypted input`
   return null
 }
 
@@ -728,7 +1140,13 @@ function opNodes(db: Db, rows: OpRow[]): OpNode[] {
     const name = OP_NAMES[o.kind as Op] ?? String(o.kind)
     const args: OpNode['args'] = []
     for (const h of [o.a, o.b, o.c]) {
-      if (h !== null) args.push({ handle: hex.get(h) ?? '' })
+      if (h !== null) {
+        const a = amt.get(h)
+        args.push({
+          handle: hex.get(h) ?? '',
+          range: { lo: a?.lo ?? '0', hi: a?.hi },
+        })
+      }
     }
     if (o.k !== null) args.push({ value: o.k })
     return {
@@ -799,9 +1217,14 @@ export function handleDetail(db: Db, hex: string): HandleDetail | undefined {
     'select d.caller, d.time, t.hash from decryptable d join txn t on t.id = d.tx where d.handle = ?',
     id,
   )
-  const input = one<{ user: string; caller: string; hash: string }>(
+  const input = one<{
+    user: string
+    caller: string
+    hash: string
+    time: number
+  }>(
     db,
-    'select i.user, i.caller, t.hash from input i join txn t on t.id = i.tx where i.handle = ?',
+    'select i.user, i.caller, t.hash, t.time from input i join txn t on t.id = i.tx where i.handle = ?',
     id,
   )
   const gateway = all<{
@@ -817,21 +1240,32 @@ export function handleDetail(db: Db, hex: string): HandleDetail | undefined {
     id,
   )
   const type = Number.parseInt(h.slice(60, 62), 16)
+  const stories = laterStories(db, id)
   return {
     handle: h,
     type: TYPE_NAMES[type] ?? `type ${type}`,
     chainId: Number(BigInt(`0x${h.slice(44, 60)}`)),
     computed: h.slice(42, 44) === 'ff',
     amount: amounts(db, [id]).get(id) ?? { lo: '0' },
+    why: whyChains(db, id, stories),
+    same: branchOf(db, id) ?? null,
+    stories,
     clear,
     expression: opNodes(db, expression),
     usedBy: opNodes(db, usedBy),
     role: roleOf(db, id),
+    about: aboutOf(db, id),
+    sends: input ? inputSends(db, id) : [],
     decryptable: dec
       ? { caller: dec.caller, time: dec.time, tx: dec.hash }
       : null,
     input: input
-      ? { user: input.user, caller: input.caller, tx: input.hash }
+      ? {
+          user: input.user,
+          caller: input.caller,
+          tx: input.hash,
+          time: input.time,
+        }
       : null,
     gateway: gateway.map((g) => ({
       id: g.id,
@@ -897,6 +1331,7 @@ export function txDetail(db: Db, hash: string): TxDetail | undefined {
       to: x.dst,
       amount: amt.get(x.amount) ?? { lo: '0' },
       handle: hex.get(x.amount) ?? '',
+      revealed: revealedLater(db, x.amount, amt.get(x.amount)),
     })),
     ops: opNodes(db, ops),
     unwraps: [
@@ -912,6 +1347,7 @@ export function txDetail(db: Db, hash: string): TxDetail | undefined {
       t.id,
       () => 'path',
     ),
+    sums: balanceSums(db, t.block, xs, sym, amt),
   }
 }
 
@@ -943,6 +1379,163 @@ export function unwrapsOf(db: Db, address: string, limit: number): string[] {
       rows.map((r) => r.handle),
     ).values(),
   ]
+}
+
+/** The ends of a handle's range that later transactions settled, with how */
+function laterStories(db: Db, id: number): HandleDetail['stories'] {
+  const b = one<{ lo: string; hi: string }>(
+    db,
+    'select lo, hi from bound where handle = ?',
+    id,
+  )
+  if (!b) return []
+  const exact = b.lo === b.hi
+  const sides: ('lo' | 'hi')[] = exact
+    ? [BigInt(b.lo) > 0n ? 'lo' : 'hi']
+    : BigInt(b.lo) > 0n
+      ? ['lo', 'hi']
+      : ['hi']
+  const made = db.prepare(
+    `select t.time, t.hash tx, t.sender from op o join txn t on t.id = o.tx
+     where o.r = ? order by o.block, o.log limit 1`,
+  )
+  return sides.flatMap((side) => {
+    const s = storyOf(db, id, side)
+    if (!s?.later) return []
+    // each other amount in the arithmetic: what it is, and when it was made
+    for (const t of s.equation?.terms ?? []) {
+      const h = handleId(db, t.handle)
+      if (h === undefined) continue
+      t.role = roleOf(db, h)
+      const a = amounts(db, [h]).get(h)
+      t.range = a ? { lo: a.lo, hi: a.hi } : undefined
+      t.made = made.get(h) as NonNullable<typeof t.made> | undefined
+    }
+    return [{ ...s, side }]
+  })
+}
+
+/** When a later public value settled an amount, if one did */
+function revealedLater(
+  db: Db,
+  id: number,
+  a: Amount | undefined,
+): { time: number } | null {
+  // published amounts and wide open ones have nothing to tell
+  if (!a?.why || (a.source && a.source !== 'inferred')) return null
+  // either end can have been settled later: a cap, or a floor
+  const ends = BigInt(a.lo) > 0n ? (['hi', 'lo'] as const) : (['hi'] as const)
+  for (const side of ends) {
+    const story = storyOf(db, id, side)
+    if (!story?.later || !story.fact) continue
+    // when it became decidable: the latest of the steps and the fact
+    const times = [
+      story.fact.time ?? 0,
+      ...story.steps.flatMap((s) => (s.later ? s.txs.map((t) => t.time) : [])),
+    ]
+    return { time: Math.max(...times) }
+  }
+  return null
+}
+
+/**
+ * For each account whose balance is known exactly just before the
+ * transaction and just after: what it received and sent in it. A balance
+ * is what came in minus what went out, so the difference of the two
+ * amounts the received minus the sent ones, exactly.
+ */
+function balanceSums(
+  db: Db,
+  block: number,
+  xs: {
+    log: number
+    token: string
+    src: string
+    dst: string
+    amount: number
+  }[],
+  sym: Map<string, string>,
+  amt: Map<number, Amount>,
+): TxDetail['sums'] {
+  /** the balance handle an account has after a transfer, null if unknown */
+  const after = (
+    x: {
+      src: string
+      dst: string
+      src_bal: number | null
+      dst_bal: number | null
+    },
+    account: string,
+  ) => (x.dst === account ? x.dst_bal : x.src_bal)
+  const exactly = (h: number | null) => {
+    if (h === null) return undefined
+    const a = amounts(db, [h]).get(h)
+    return a?.hi !== undefined && a.lo === a.hi ? a.lo : undefined
+  }
+  const out: TxDetail['sums'] = []
+  const keys = new Set(
+    xs.flatMap((x) => [`${x.token}:${x.src}`, `${x.token}:${x.dst}`]),
+  )
+  for (const key of keys) {
+    const [token, account] = key.split(':') as [string, string]
+    if (account === ZERO) continue
+    const mine = xs.filter(
+      (x) => x.token === token && (x.src === account || x.dst === account),
+    )
+    const first = mine[0]
+    const last = mine.at(-1)
+    if (!first || !last || mine.length < 2) continue
+    const prev = one<{
+      src: string
+      dst: string
+      src_bal: number | null
+      dst_bal: number | null
+    }>(
+      db,
+      `select src, dst, src_bal, dst_bal from xfer
+       where token = ?1 and (src = ?2 or dst = ?2)
+         and (block < ?3 or (block = ?3 and log < ?4))
+       order by block desc, log desc limit 1`,
+      token,
+      account,
+      block,
+      first.log,
+    )
+    // no transfer before: the account had nothing yet
+    const before = prev ? exactly(after(prev, account)) : '0'
+    const end = one<{
+      src: string
+      dst: string
+      src_bal: number | null
+      dst_bal: number | null
+    }>(
+      db,
+      'select src, dst, src_bal, dst_bal from xfer where token = ? and block = ? and log = ?',
+      token,
+      block,
+      last.log,
+    )
+    const now = end ? exactly(after(end, account)) : undefined
+    if (before === undefined || now === undefined) continue
+    // only worth saying when it ties together amounts not known exactly
+    const open = mine.some((x) => {
+      const a = amt.get(x.amount)
+      return !(a?.hi !== undefined && a.lo === a.hi)
+    })
+    if (!open) continue
+    const at = (x: { log: number }) => xs.findIndex((y) => y.log === x.log)
+    out.push({
+      account,
+      symbol: sym.get(token) ?? '?',
+      before,
+      after: now,
+      received: mine
+        .filter((x) => x.dst === account && x.src !== account)
+        .map(at),
+      sent: mine.filter((x) => x.src === account && x.dst !== account).map(at),
+    })
+  }
+  return out
 }
 
 /** Rows of linked unwraps shown on a page */
@@ -1251,6 +1844,7 @@ export async function tokenDetail(
       const id = handleId(db, ts)
       supply = {
         handle: ts.slice(2),
+        indexed: id !== undefined,
         amount:
           id === undefined
             ? { lo: '0' }

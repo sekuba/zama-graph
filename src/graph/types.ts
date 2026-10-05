@@ -14,7 +14,40 @@ export interface Amount {
   hi?: string
   /** where an exact value comes from, when one source published it */
   source?: ClearSource
+  /** the step behind each bound the derivation narrowed */
+  why?: { lo?: Because; hi?: Because }
 }
+
+/** The step that last narrowed a bound. Handles are hex. */
+export type Because =
+  | { step: 'published' }
+  | { step: 'wrap' }
+  /** at most what was in circulation: wrapped so far minus unwrapped */
+  | { step: 'supply'; wrapped: string; unwrapped: string }
+  /** a balance is what came in minus what went out; a pool returns no more than was paid in */
+  | { step: 'pool' }
+  /** the token's whole history as one flow allows no more (or less) */
+  | { step: 'flow' }
+  /** every operation of its transaction, solved exactly, allows no more */
+  | { step: 'exact' }
+  /** the transactions linked to it, solved together, allow no more */
+  | { step: 'lp' }
+  /** computed from the operands of the operation that produced it */
+  | { step: 'forward'; op: string; at: string; args: string[] }
+  /** constrained by an operation that uses it, whose result is `result` */
+  | { step: 'backward'; op: string; at: string; result: string }
+  /** a debit: what is kept plus what is sent equals the balance before */
+  | {
+      step: 'ledger'
+      as: 'sent' | 'kept' | 'balance'
+      balance: string
+      kept: string
+      sent: string
+      /** what the balance before is known to be: what caps sent and kept */
+      before?: { lo: string; hi?: string }
+    }
+  /** provably the same value as another handle, and what that one is */
+  | { step: 'equal'; handle: string; role?: string }
 
 export type ClearSource =
   | 'wrap'
@@ -23,6 +56,8 @@ export type ClearSource =
   | 'verified'
   | 'gateway'
   | 'relayer'
+  /** a clear constant made into a handle: its value is in the event */
+  | 'trivial'
   | 'inferred'
 
 export interface TokenInfo {
@@ -271,7 +306,8 @@ export interface TokenDetail {
   transfers: number
   holders: number
   /** confidentialTotalSupply() now, and what the public data pins it to */
-  supply: { handle: string; amount: Amount } | null
+  /** confidentialTotalSupply() now; indexed: the index has its handle yet */
+  supply: { handle: string; indexed: boolean; amount: Amount } | null
   /** inferredTotalSupply(): the underlying it holds / rate, in clear */
   escrow: string | null
 }
@@ -395,19 +431,117 @@ export interface HistoryGraph {
   truncated: boolean
 }
 
+/** How much is known of a value: exactly, a range, or nothing usable */
+export type Known = 'exact' | 'bounded' | 'hidden'
+
+/** The bounds of a value, without where they come from */
+export interface Range {
+  lo: string
+  hi?: string
+}
+
 export interface OpNode {
   /** block and log index of the executor event */
   at: string
   handle: string
   op: string
-  /** operands: handles, or a clear value */
-  args: ({ handle: string } | { value: string })[]
+  /** operands: handles with what is known of each, or a clear value */
+  args: ({ handle: string; range: Range } | { value: string })[]
   caller: string
   tx: string
   time: number
   amount: Amount
   /** what the handle is: a transfer amount, a balance, ... */
   role?: string
+}
+
+/** What a handle is, in terms a reader knows */
+export type About =
+  | { kind: 'transfer'; symbol: string; from: string; to: string }
+  | { kind: 'wrap'; symbol: string; to: string }
+  | { kind: 'unwrap'; symbol: string; from: string }
+  | { kind: 'balance'; symbol: string; account: string }
+
+/** A transfer an encrypted input asked for */
+export interface InputSend {
+  /** the transfer's amount */
+  handle: string
+  amount: Amount
+  about: About | null
+  /**
+   * sent only if the sender's balance covered the input, else nothing
+   * (ERC-7984 `_update`: select(ge(balance, input), input, 0))
+   */
+  checked: boolean
+}
+
+/** One step of where a bound comes from, followed back toward public data */
+export interface WhyStep {
+  handle: string
+  amount: Amount
+  role: string | null
+  /** which end of the range the step explains */
+  side: 'lo' | 'hi'
+  because: Because
+  /** an equality: the if/else behind it */
+  branch?: Branch
+  /** the operands of a computed step, with what is known of each */
+  args?: WhyTerm[]
+  /** a flow step: what pins it, see `Cut` in fhe/flow.ts */
+  cut?: {
+    /** what came in (upper bound) or had to come in (lower bound) */
+    plus: WhyTerm[]
+    /** what else had to leave (upper bound) or could leave (lower bound) */
+    minus: WhyTerm[]
+    /** terms not listed, and what they added up to at the solve */
+    morePlus: { count: number; total: string }
+    moreMinus: { count: number; total: string }
+    /** all plus terms minus all minus terms: the bound */
+    total: string
+  }
+}
+
+export interface WhyChain {
+  side: 'lo' | 'hi' | 'both'
+  steps: WhyStep[]
+}
+
+export interface WhyTerm {
+  handle: string
+  amount: Amount
+  role: string | null
+}
+
+/**
+ * An encrypted if/else whose condition is known, so its result is the
+ * choice it took: the two are one value
+ */
+export interface Branch {
+  cond: WhyTerm
+  /** what the condition is known to be */
+  holds: boolean
+  taken: WhyTerm
+  other: WhyTerm
+  result: WhyTerm
+  /**
+   * a transfer's debit: the amount asked for if the balance covers it,
+   * otherwise 0
+   */
+  debit: boolean
+  /** why the condition is known */
+  because:
+    | {
+        /** the result does not fit what the other choice can be */
+        step: 'result'
+      }
+    | {
+        /** a comparison whose two sides allow one answer */
+        step: 'compare'
+        op: string
+        a: WhyTerm
+        b: WhyTerm | { clear: string }
+      }
+    | { step: 'other'; why: Because | null }
 }
 
 export interface HandleDetail {
@@ -422,13 +556,30 @@ export interface HandleDetail {
     time: number
     ref: string | null
   }[]
+  /**
+   * where each end of its range comes from, step by step back toward
+   * public data; `both` when one chain explains an exact value. An end a
+   * story explains has no chain.
+   */
+  why: WhyChain[]
+  /** an if/else with a known condition that makes it the same as another */
+  same: Branch | null
+  /** for each end revealed by what happened later: the trail to it */
+  stories: (Story & { side: 'lo' | 'hi' })[]
   /** the operation that produced it and its operands, a few levels deep */
   expression: OpNode[]
   /** what uses it */
   usedBy: OpNode[]
   role: string | null
+  about: About | null
+  /** for an encrypted input: the transfers it asked for */
+  sends: InputSend[]
   decryptable: { caller: string; time: number; tx: string } | null
-  input: { user: string; caller: string; tx: string } | null
+  /**
+   * an encrypted input: the address its proof binds it to, the contract it
+   * is for, and the transaction that submitted it (encrypted offchain before)
+   */
+  input: { user: string; caller: string; tx: string; time: number } | null
   gateway: {
     id: string
     kind: 'public' | 'user'
@@ -452,6 +603,8 @@ export interface TxDetail {
     to: string
     amount: Amount
     handle: string
+    /** settled by what happened after the transaction: when the public value came */
+    revealed: { time: number } | null
   }[]
   ops: OpNode[]
   /** unwraps requested or finalized in it (handles) */
@@ -460,6 +613,19 @@ export interface TxDetail {
   linked: { total: number; rows: LinkedUnwrap[] }
   /** the histories of its unwraps and of those linked through it */
   graph?: HistoryGraph
+  /**
+   * Accounts whose balance is known exactly before and after the
+   * transaction: what they received minus what they sent is exactly the
+   * difference. Transfers by their place in `transfers` (0 first).
+   */
+  sums: {
+    account: string
+    symbol: string
+    before: string
+    after: string
+    received: number[]
+    sent: number[]
+  }[]
 }
 
 export interface ReadersSummary {
@@ -574,4 +740,55 @@ export interface HubDetail {
     levels: PriceLevel[]
   }
   intents?: IntentRow[]
+}
+
+/**
+ * How a bound was reached: the operations that carried it, grouped by
+ * transaction, from the value out to the public fact it rests on
+ */
+export interface Story {
+  steps: StoryStep[]
+  /** the public value at the end, if the trail reaches one */
+  fact: {
+    /** unwrap (finalized), wrap, or a clear source: gateway, disclose, ... */
+    kind: string
+    value: string
+    handle: string
+    account: string | null
+    tx: string | null
+    time: number | null
+  } | null
+  /** otherwise the rule it rests on: supply, pool, flow, exact */
+  rule: string | null
+  /** whether a step happened after the value's own transaction */
+  later: boolean
+  /**
+   * along sums and differences: the bound is the public value (with its
+   * sign) plus these other bounds, each with its sign, checked to add up
+   */
+  equation: {
+    factSign: 1 | -1
+    terms: {
+      handle: string
+      value: string
+      side: 'lo' | 'hi'
+      sign: 1 | -1
+      /** what the amount is, what is known of it, and what made it */
+      role?: string | null
+      range?: Range
+      made?: { time: number; tx: string; sender: string | null }
+    }[]
+    bound: string
+  } | null
+}
+
+export interface StoryStep {
+  /** the contract that ran the operations */
+  caller: string
+  /** the operations, in order, once each */
+  ops: string[]
+  /** one transaction, or the same step repeated in several */
+  txs: { hash: string; block: number; time: number; sender: string | null }[]
+  /** after the value's own transaction */
+  later: boolean
 }

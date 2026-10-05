@@ -1,5 +1,10 @@
 import { type ReactNode, useState } from 'react'
-import type { Amount as AmountT } from '../../src/graph/types'
+import type {
+  Amount as AmountT,
+  Because,
+  Known,
+  Range,
+} from '../../src/graph/types'
 import { addressUrl, compact, date, shortHex, txUrl, units } from './format'
 import { labelOf, useLabels } from './labels'
 import { nameOf, useNames } from './names'
@@ -35,13 +40,147 @@ export const SOURCE: Record<string, string> = {
 }
 
 function sourceText(source = 'inferred'): string {
-  return source === 'inferred'
-    ? 'pinned: published by nobody, but the only value the public data allows'
-    : `public: ${SOURCE[source] ?? source}`
+  if (source === 'inferred') {
+    return 'exact amount known: published by nobody, but the only value the public data allows'
+  }
+  if (source === 'trivial')
+    return 'public: a constant written in clear in the event'
+  return `public: ${SOURCE[source] ?? source}`
+}
+
+const OP_TEXT: Record<string, [string, string]> = {
+  select: [
+    'the smaller of the two values its condition chooses between',
+    'the larger of the two values its condition chooses between',
+  ],
+  add: [
+    'the sum of its operands’ lower bounds',
+    'the sum of its operands’ upper bounds',
+  ],
+  sub: [
+    'its first operand’s lower bound minus the second’s upper bound',
+    'its first operand’s upper bound minus the second’s lower bound',
+  ],
+}
+
+const EXACT_OP: Record<string, string> = {
+  add: 'exactly the sum of its operands',
+  sub: 'exactly the difference of its operands',
+  select: 'exactly the value its condition picks',
 }
 
 /**
- * An encrypted amount as the public data pins it. Exact values are either
+ * Where a bound comes from, in a sentence. `side` is which end it bounds;
+ * `exact` when the value is pinned, so a computed step reads as one.
+ */
+export function because(
+  b: Because,
+  side: 'lo' | 'hi',
+  symbol = '',
+  exact = false,
+): string {
+  if (exact && b.step === 'forward') {
+    return EXACT_OP[b.op] ?? `exactly what the ${b.op} computes`
+  }
+  const most = side === 'hi' ? 'at most' : 'at least'
+  const sym = symbol ? ` ${symbol}` : ''
+  switch (b.step) {
+    case 'published':
+      return 'published'
+    case 'wrap':
+      return 'published in clear by its wrap'
+    case 'supply':
+      return `${most} all${sym} in circulation at that point: ${units(b.wrapped)} wrapped minus ${units(b.unwrapped)} unwrapped`
+    case 'pool':
+      return `${most} what the account received from elsewhere: a pool or the vault router never returns more than the account deposited into it`
+    case 'flow':
+      return `${most} what any history of all${sym} transfers allows, where every balance is what came in minus what went out and never goes negative`
+    case 'exact':
+      return `${most} what every operation of its transaction allows, each with its exact encrypted arithmetic, solved by an exact solver`
+    case 'lp':
+      return `${most} what all the transactions linked to it allow together: their sums, balances and batch totals, solved as one system`
+    case 'forward': {
+      const text = OP_TEXT[b.op]
+      return text
+        ? `${most} ${text[side === 'lo' ? 0 : 1]}`
+        : `follows from the ${b.op} that computed it`
+    }
+    case 'backward':
+      return `follows from the result of a ${b.op} that uses it`
+    case 'ledger':
+      return b.as === 'sent'
+        ? 'a transfer moves no more than the sender’s balance before it: asking for more moves 0, instead of failing and revealing the balance'
+        : b.as === 'kept'
+          ? 'what the sender keeps is its balance minus what it sent'
+          : 'the balance before a transfer is what was kept plus what was sent'
+    case 'equal':
+      return 'provably the same value as another handle'
+  }
+}
+
+/**
+ * An amount linked to its handle page, where each end of its range is
+ * explained step by step
+ */
+export function AmountLink({
+  a,
+  handle,
+  href,
+}: {
+  a: AmountT
+  handle: string
+  /** where the amount links, when not its handle page */
+  href?: string
+}) {
+  return (
+    <a href={href ?? `#handle/${handle}`}>
+      <Amount a={a} handle={handle} />
+    </a>
+  )
+}
+
+/** What the four ways an amount is drawn mean, shown next to amounts */
+export function AmountLegend() {
+  return (
+    <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-ink-2">
+      <span>
+        <span className="mono amt-public">plain number</span>: public, published
+        onchain
+      </span>
+      <span>
+        <span className="mono amt-derived">highlighted number</span>: derived,
+        nobody published it but no other value fits the public data
+      </span>
+      <span>
+        <span className="mono amt-bounded">≤ number</span>: bounded, only this
+        range fits
+      </span>
+      <span>
+        <span className="mono amt-hidden">hidden</span>: nothing public narrows
+        it beyond what its type can hold
+      </span>
+    </div>
+  )
+}
+
+/** The tooltip lines that say where each bound of an amount comes from */
+function becauseLines(a: AmountT, symbol?: string): string {
+  const lines: string[] = []
+  if (a.why?.lo && a.lo !== a.hi) {
+    lines.push(`≥ ${units(a.lo)}: ${because(a.why.lo, 'lo', symbol)}`)
+  }
+  if (a.why?.hi && a.hi !== undefined) {
+    lines.push(
+      a.lo === a.hi
+        ? because(a.why.hi, 'hi', symbol)
+        : `≤ ${units(a.hi)}: ${because(a.why.hi, 'hi', symbol)}`,
+    )
+  }
+  return lines.length > 0 ? `\n${lines.join('\n')}` : ''
+}
+
+/**
+ * An encrypted amount as far as the public data determines it. Exact values are either
  * published (ink) or derived by this tool (highlighted); ranges show both
  * bounds; nothing usable shows as hidden.
  */
@@ -75,6 +214,7 @@ export function Amount({
   if (v === 'public' || v === 'derived') {
     text = fmt(a.lo)
     title = sourceText(a.source)
+    if (v === 'derived') title += becauseLines(a, symbol)
   } else if (v === 'bounded') {
     const lo = BigInt(a.lo)
     text =
@@ -83,7 +223,7 @@ export function Amount({
         : lo > 0n
           ? `${fmt(a.lo)} – ${fmt(a.hi)}`
           : `≤ ${fmt(a.hi)}`
-    title = 'bounded: the public data allows only this range'
+    title = `bounded: the public data allows only this range${becauseLines(a, symbol)}`
   } else {
     text = 'hidden'
     title = 'hidden: nothing public narrows it down'
@@ -95,6 +235,33 @@ export function Amount({
         <span className="text-muted"> {symbol}</span>
       )}
     </span>
+  )
+}
+
+/**
+ * A label the index gives a value, such as "cUSDT transfer 0x… → 0x…",
+ * with its addresses drawn as addresses (named, shortened, linked)
+ */
+export function Role({
+  text,
+  plain,
+}: {
+  text: string
+  /** no links, e.g. inside a link already */
+  plain?: boolean
+}) {
+  const parts = text.split(/(0x[0-9a-f]{40})/)
+  return (
+    <>
+      {parts.map((p, i) =>
+        /^0x[0-9a-f]{40}$/.test(p) ? (
+          // biome-ignore lint/suspicious/noArrayIndexKey: parts of one fixed string
+          <Address key={i} address={p} plain={plain} />
+        ) : (
+          p
+        ),
+      )}
+    </>
   )
 }
 
@@ -184,18 +351,66 @@ export function Tx({ hash, label }: { hash: string; label?: ReactNode }) {
   )
 }
 
-/** A ciphertext handle: its page here */
-export function Handle({ h, chars = 4 }: { h: string; chars?: number }) {
+/** Outlines every place a handle appears while one of them is hovered */
+function markSame(h: string, on: boolean) {
+  for (const el of document.querySelectorAll(`[data-handle="${h}"]`)) {
+    el.classList.toggle('same', on)
+  }
+}
+
+/**
+ * A ciphertext handle: its page here, marked by how much is known of its
+ * value, which shows on hover
+ */
+export function Handle({
+  h,
+  chars = 4,
+  amount,
+}: {
+  h: string
+  chars?: number
+  /** what is known of its value, when the caller has it */
+  amount?: Range
+}) {
   if (!h) return null
+  const known = amount ? knownOf(amount) : undefined
   return (
     <a
       href={`#handle/${h}`}
-      className="mono text-ink-2"
-      title={`handle 0x${h}`}
+      className={`mono h-${known ?? 'unmarked'}${amount ? ' hv' : ''}`}
+      data-value={amount ? valueText(amount, h) : undefined}
+      data-handle={h}
+      onMouseEnter={() => markSame(h, true)}
+      onMouseLeave={() => markSame(h, false)}
+      onFocus={() => markSame(h, true)}
+      onBlur={() => markSame(h, false)}
     >
       {shortHex(h, chars)}
     </a>
   )
+}
+
+/** A value as a few characters for a hover label: = 0, ≤ 1.5, 1 to 2 */
+function valueText(a: Range, h: string): string {
+  const exact = a.hi !== undefined && a.lo === a.hi
+  // byte 30 is the type: 0 is an encrypted condition
+  if (h.slice(60, 62) === '00') {
+    return exact ? (a.lo === '1' ? '= true' : '= false') : 'true or false'
+  }
+  if (exact) return `= ${units(a.lo)}`
+  const narrowHi = a.hi !== undefined && BigInt(a.hi) < HUGE
+  if (narrowHi && BigInt(a.lo) > 0n) {
+    return `${units(a.lo)} to ${units(a.hi as string)}`
+  }
+  if (narrowHi) return `≤ ${units(a.hi as string)}`
+  if (BigInt(a.lo) > 0n) return `≥ ${units(a.lo)}`
+  return 'nothing narrows it'
+}
+
+/** How much is known of an amount, for marking its handle */
+export function knownOf(a: Range): Known {
+  const v = visibility(a)
+  return v === 'public' || v === 'derived' ? 'exact' : v
 }
 
 export function Time({ t }: { t: number }) {

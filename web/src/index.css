@@ -124,6 +124,54 @@ table.stack tbody tr {
 table.stack tbody tr:hover {
   background: var(--wash);
 }
+/* the line under an amount: how it is known, or what limits it */
+/* a handle wraps as a whole, never in the middle */
+[data-handle] {
+  white-space: nowrap;
+}
+/* handles, by how much is known of their value */
+.h-unmarked {
+  color: var(--ink-2);
+}
+.h-exact {
+  color: var(--mark-ink);
+  background: var(--mark);
+  border-radius: 2px;
+  box-shadow: 0 0 0 2px var(--mark);
+}
+.h-bounded {
+  color: var(--ink);
+  text-decoration: underline dotted;
+  text-underline-offset: 2px;
+}
+.h-hidden {
+  color: var(--hidden);
+}
+/* a handle's value, shown above it on hover */
+.hv {
+  position: relative;
+}
+.hv:hover::after {
+  content: attr(data-value);
+  position: absolute;
+  bottom: calc(100% + 4px);
+  left: 0;
+  z-index: 20;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: var(--ink);
+  color: var(--page);
+  font-size: 11px;
+  white-space: nowrap;
+  pointer-events: none;
+}
+/* every copy of the hovered handle */
+.same {
+  outline: 1px dashed var(--mark-line);
+  outline-offset: 1px;
+  background: rgba(255, 210, 8, 0.15);
+  border-radius: 3px;
+}
 .chip {
   border: 1px solid var(--axis);
   border-radius: 4px;
@@ -248,12 +296,13 @@ a.evidence.on {
 .amt-public {
   color: var(--public);
 }
-/* pinned by the data, published by nobody: highlighted */
+/* derived from the data, published by nobody: highlighted */
 .amt-derived {
   color: var(--mark-ink);
   background: var(--mark);
   border-radius: 2px;
-  padding: 0 2px;
+  /* drawn around the text, not padding: aligned numbers stay aligned */
+  box-shadow: 0 0 0 2px var(--mark);
   font-weight: 500;
 }
 .amt-bounded {

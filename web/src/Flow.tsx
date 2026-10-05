@@ -147,11 +147,12 @@ export function Unwrap({ d }: { d: UnwrapDetail }) {
           )}
         </div>
         <div className="text-xs text-ink-2">
-          requested <Time t={d.time} /> in <Tx hash={d.tx} />
+          requested <Time t={d.time} /> in transaction <Tx hash={d.tx} />
           {d.finalized && d.finTx ? (
             <>
               {' '}
-              · finalized <Time t={d.finTime ?? 0} /> in <Tx hash={d.finTx} />
+              · finalized <Time t={d.finTime ?? 0} /> in transaction{' '}
+              <Tx hash={d.finTx} />
               {d.finalizer &&
                 d.finalizer !== d.burner &&
                 d.finalizer !== d.receiver && (
@@ -168,12 +169,12 @@ export function Unwrap({ d }: { d: UnwrapDetail }) {
               {v === 'public'
                 ? 'value public anyway'
                 : v === 'derived'
-                  ? 'value pinned anyway'
+                  ? 'exact amount known anyway'
                   : 'anyone can decrypt its value'}
             </>
           )}{' '}
           · handle <Handle h={d.handle} chars={6} />
-          {d.decryptable && d.finalized && ' · publicly decryptable'}
+          {d.decryptable && d.finalized && ' · anyone can decrypt its amount'}
         </div>
       </div>
       <Sources d={d} />
@@ -232,11 +233,21 @@ function Sources({ d }: { d: UnwrapDetail }) {
       </>
     )
   } else if (t.origin === 'hub') {
-    caption = <>Partly via pools, no depositor proven.</>
+    caption = (
+      <>
+        Part of it came through a pool, which mixes many people's deposits, so
+        no single depositor can be proven.
+      </>
+    )
   } else if (t.origin === 'several') {
-    caption = <>{plural(t.depositors, 'possible depositor')}, none proven.</>
+    caption = (
+      <>
+        {plural(t.depositors, 'account')} may have funded it, and none can be
+        proven to.
+      </>
+    )
   } else {
-    caption = <>No deposit in its history.</>
+    caption = <>No deposit appears in its history.</>
   }
   const meta = [
     plural(t.events, 'transfer'),
@@ -542,7 +553,7 @@ function LinkRow({
         100%
         {via && <span className="hidden font-normal sm:inline">· {via}</span>}
         {l.via.length > 0 && (
-          <span className="hidden font-normal sm:inline">· via pool</span>
+          <span className="hidden font-normal sm:inline">· through a pool</span>
         )}
       </a>
       <Box color="var(--withdrawal)">
