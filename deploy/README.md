@@ -14,8 +14,37 @@ stillnot.slashveto.me      cloudflared  ->  127.0.0.1:3021  (zama-graph-serve)
 
 Sync and serve are separate units so that the sync failing (an RPC being
 down) restarts only the sync and the API stays up. The sync derives bounds,
-traces and the scoreboard every ten minutes; a run takes under a minute and
-about 2 GB of memory at the current size.
+traces and the scoreboard every ten minutes; a run takes a few minutes and
+about 2 GB of memory at the current size. Each of the propagation passes
+runs to its fixpoint or for `BOUNDS_SECONDS` (default 60), whichever comes
+first: rounding in vault share maths makes some bounds creep for millions
+of rounds, and stopping early only leaves them looser.
+
+The flow step solves each token's whole history as one network
+(`src/fhe/flow.py`, OR-tools, through [uv](https://docs.astral.sh/uv/)):
+every balance is what came in minus what went out and never goes negative.
+It spends at most `FLOW_SECONDS` (default 120) per run on arcs never solved
+and keeps what it proved, with the cut that proves it, in `flow_bound`, so
+the first runs after a fresh sync catch up over a few cycles. An arc solved
+once keeps what it proved then while the bounds around it narrow, so once a
+day a run solves every arc again from that day's bounds (about 15 minutes,
+at most `FLOW_FRESH_SECONDS`, default 1800); `FLOW_FRESH=1` forces it.
+
+Then each transaction is solved exactly with Z3 (`src/fhe/exact.py`):
+every operation with its encrypted arithmetic, every proven bound, each
+open value maximised and minimised. A run spends at most `EXACT_SECONDS`
+(default 180) on transactions not solved yet, oldest first, then on those
+whose values narrowed since they were solved (later events, other solves),
+and keeps what it proved in `exact_tx` and `exact_bound` after each batch.
+A fresh database has about 60,000 transactions, about an hour of solving:
+run `EXACT_SECONDS=5000 pnpm dev bounds` once instead of waiting for the
+cycles to catch up.
+
+The solvers run at the lowest priority (`nice -n 19`) on half the cores,
+`SOLVER_WORKERS` to change it, so they yield to everything else on the
+machine. A solver that runs past its time and ten minutes is stopped, and
+without a network uv runs them on what it has cached. `BOUNDS_FLOW=0` and
+`BOUNDS_EXACT=0` skip a step: the bounds are then only looser.
 
 ```sh
 pnpm install && pnpm build

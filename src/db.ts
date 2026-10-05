@@ -249,6 +249,25 @@ const SCHEMA = `
   create table if not exists bound (
     handle integer primary key,
     lo text not null,
+    hi text not null,
+    lo_why text,                  -- the step behind each bound, json
+    hi_why text
+  );
+
+  -- what the token flows proved per handle; kept across derives
+  create table if not exists flow_bound (
+    handle integer primary key,
+    lo text not null,
+    hi text not null,
+    lo_cut text,                  -- json: the handles that pin a tightened side
+    hi_cut text
+  );
+
+  -- the transactions the exact solver went through, and what it proved
+  create table if not exists exact_tx (tx integer primary key, sig text);
+  create table if not exists exact_bound (
+    handle integer primary key,
+    lo text not null,
     hi text not null
   );
 
@@ -283,6 +302,10 @@ export function openDb(path: string): Db {
 /** Columns added to existing tables after their first release */
 const ADDED: Record<string, Record<string, string>> = {
   gw_response: { signers: 'integer' },
+  bound: { lo_why: 'text', hi_why: 'text' },
+  flow_bound: { lo_cut: 'text', hi_cut: 'text' },
+  // where each transaction's exact solve started: solved again when it moves
+  exact_tx: { sig: 'text' },
 }
 
 function migrate(db: Db): void {

@@ -1,6 +1,6 @@
 import { expect } from 'earl'
 import { FheType, Op } from '../protocol'
-import { type DagOp, type Fact, propagate } from './bounds'
+import { type DagOp, type Fact, propagate, Step } from './bounds'
 
 /** A tiny DAG builder: handles are numbered in order of creation */
 class Dag {
@@ -96,6 +96,42 @@ describe('propagate', () => {
     // she kept at least the 30 she unwrapped later
     expect([r.lo[t.sent], r.hi[t.sent]]).toEqual([0n, 70n])
     expect([r.lo[t.kept], r.hi[t.kept]]).toEqual([30n, 100n])
+  })
+
+  it('subtracts what is capped by the minuend without wrapping', () => {
+    // remaining = available - min(request, available): never wraps, so it
+    // is at most what was available even with the request unknown
+    const d = new Dag()
+    const available = d.input()
+    d.facts.push({ handle: available, lo: 0n, hi: 880n })
+    const bought = d.bin(Op.Min, d.input(), available)
+    const zero = d.trivial(0n)
+    const paid = d.bin(Op.Eq, d.input(), d.input())
+    const taken = d.select(paid, bought, zero)
+    const remaining = d.bin(Op.Sub, available, taken)
+    const r = d.run()
+    expect([r.lo[remaining], r.hi[remaining]]).toEqual([0n, 880n])
+    // without the relation a difference of two unknowns says nothing
+    const other = d.bin(Op.Sub, available, d.input())
+    const r2 = d.run()
+    expect(r2.hi[other]).toEqual((1n << 64n) - 1n)
+  })
+
+  it('records the step behind each bound', () => {
+    const d = new Dag()
+    const zero = d.trivial(0n)
+    const alice = d.bin(Op.Add, zero, d.trivial(100n))
+    const t = d.debit(alice, d.input())
+    const out = d.debit(t.kept, d.input())
+    d.facts.push({ handle: out.sent, lo: 30n, hi: 30n })
+    const r = d.run()
+    // the unwrap is a fact; what was sent before is capped by the ledger
+    expect(r.whyHi.step[out.sent]).toEqual(Step.Fact)
+    expect(r.whyHi.ref[out.sent]).toEqual(0)
+    expect(r.whyHi.step[t.sent]).toEqual(Step.Ledger)
+    expect(r.whyLo.step[t.kept]).not.toEqual(Step.None)
+    // nothing narrows the input from below
+    expect(r.whyLo.step[t.sent]).toEqual(Step.None)
   })
 
   it('knows an account without a balance sends nothing', () => {

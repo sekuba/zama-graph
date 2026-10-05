@@ -6,8 +6,9 @@ Description=zama-graph sync: index Ethereum and the Zama Gateway, derive bounds 
 # the checkout; .env in this directory is read on startup
 WorkingDirectory=%h/w/zama-graph
 Environment=NODE_ENV=production
-# node >= 22.13; this is fnm's default alias, adjust for other installs
-Environment=PATH=%h/.local/share/fnm/aliases/default/bin:/usr/local/bin:/usr/bin:/bin
+# node >= 22.13; this is fnm's default alias, adjust for other installs.
+# uv (in ~/.local/bin) runs the flow solver
+Environment=PATH=%h/.local/share/fnm/aliases/default/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 # the propagation holds about a million handles in memory
 ExecStart=/usr/bin/env node --disable-warning=ExperimentalWarning --max-old-space-size=4096 dist/cli.js sync --follow
 Restart=always
