@@ -1,6 +1,9 @@
 import { spawnSync } from 'node:child_process'
+import { mkdtempSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { expect } from 'earl'
-import { type FlowTransfer, networks, solveFlows } from './flow'
+import { type FlowTransfer, networks, runSolver, solveFlows } from './flow'
 
 const ZERO = '0x0000000000000000000000000000000000000000'
 const T = '0x00000000000000000000000000000000000000c0'
@@ -103,5 +106,22 @@ describe('flow solver', function () {
       expect(f.lo >= (lo[f.handle] ?? 0n)).toEqual(true)
       expect(f.hi <= (hi[f.handle] ?? 0n)).toEqual(true)
     }
+  })
+})
+
+describe('runSolver', function () {
+  this.timeout(120_000)
+
+  it('runs a solver with a budget left over, a fraction of a second', function () {
+    if (spawnSync('uv', ['--version']).status !== 0) this.skip()
+    const dir = mkdtempSync(join(tmpdir(), 'solver-'))
+    const script = join(dir, 'echo.py')
+    writeFileSync(
+      script,
+      '# /// script\n# dependencies = []\n# ///\nimport sys\nprint(sys.stdin.read())\n',
+    )
+    const run = runSolver(script, [], 'in', 16.742999)
+    expect(run.error).toEqual(undefined)
+    expect(run.stdout.trim()).toEqual('in')
   })
 })

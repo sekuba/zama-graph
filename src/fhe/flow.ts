@@ -158,7 +158,8 @@ export function runSolver(
       input,
       encoding: 'utf8',
       maxBuffer: 1 << 30,
-      timeout: (seconds + SOLVER_MARGIN_S) * 1000,
+      // whole milliseconds: a budget left over is fractional
+      timeout: Math.ceil((seconds + SOLVER_MARGIN_S) * 1000),
       killSignal: 'SIGTERM',
     })
   }
