@@ -66,6 +66,13 @@ sudo loginctl enable-linger $USER   # keep them running without a login session
 journalctl --user -u zama-graph-serve -f
 ```
 
+A derive takes a lock next to the database, so one started by hand (`pnpm
+dev derive`) and the sync's never both rewrite the derived tables: the
+later one skips its turn. The sync retries a job that fails (an RPC down,
+a tunnel not up yet after a reboot) every minute, instead of leaving it
+dead inside a process the derive loop keeps alive, where systemd would not
+restart it.
+
 On a fresh machine, build the database once before enabling the units:
 `pnpm sync` indexes the full history and derives (about 20 minutes). The
 sync unit derives every ten minutes from the start, so on an empty database

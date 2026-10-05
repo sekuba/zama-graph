@@ -11,7 +11,10 @@ export default defineConfig({
   },
   server: {
     proxy: {
-      '/api': 'http://localhost:3021',
+      '/api': {
+        target: process.env.API_PROXY ?? 'http://localhost:3021',
+        changeOrigin: true,
+      },
     },
   },
 })
