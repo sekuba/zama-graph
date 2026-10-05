@@ -15,6 +15,7 @@ import {
 } from './bounds'
 import { solveExact, txModels } from './exact'
 import { type Cut, type FlowBound, networks, solveFlows } from './flow'
+import { type LpResult, lpModel, solveLp } from './lp'
 
 export interface DeriveStats {
   /** the last block whose transfers this run covered */
@@ -25,6 +26,8 @@ export interface DeriveStats {
   caps: number
   /** bounds the token flows tightened beyond the propagation */
   flows: number
+  /** bounds the linked transactions, solved together, tightened */
+  lps: number
   pairs: number
   rounds: number
   /** whether the last pass reached its fixpoint */
@@ -47,6 +50,7 @@ export type FactWhy =
   | { step: 'pool' }
   | { step: 'flow' }
   | { step: 'exact' }
+  | { step: 'lp' }
 
 /** A fact and where it comes from */
 type Sourced = Fact & { why: FactWhy }
@@ -209,6 +213,12 @@ export function deriveBounds(db: Db): DeriveStats {
       f.lo > (first.lo[f.handle] ?? 0n) || f.hi < (first.hi[f.handle] ?? MAX64),
   )
   for (const f of known) sourced.push({ ...f, why: { step: 'exact' } })
+  // and so does what the linked transactions proved together
+  const lpKnown = lpCache(db).bounds.filter(
+    (f) =>
+      f.lo > (first.lo[f.handle] ?? 0n) || f.hi < (first.hi[f.handle] ?? MAX64),
+  )
+  for (const f of lpKnown) sourced.push({ ...f, why: { step: 'lp' } })
   let result = propagate(ops, types, sourced, rounds, dispatched, ms)
   // the whole history of each token as one flow: what earlier runs proved
   // (still true, the history they saw is final) and what is not solved yet
@@ -319,6 +329,46 @@ export function deriveBounds(db: Db): DeriveStats {
     for (const f of sharper) sourced.push({ ...f, why: { step: 'exact' } })
     result = propagate(ops, types, sourced, rounds, dispatched, ms)
   }
+  // the linked transactions as one linear system: the transfer amounts
+  // never solved first (newest first), then those solved longest ago,
+  // within the time
+  let lps = 0
+  if (process.env.BOUNDS_LP !== '0') {
+    const started = Date.now()
+    const done = lpCache(db).done
+    const position = new Map(xfers.map((x, i) => [x.amount, i]))
+    const model = lpModel(
+      rows,
+      ops,
+      types,
+      result.lo,
+      result.hi,
+      pairs.values(),
+      dispatched,
+      xfers.map((x) => x.amount),
+      // never solved first, the newest of them first: recent batches are
+      // where the loops are, and what the live page shows
+      (h) => done.get(h) ?? -1 - (position.get(h) ?? 0),
+    )
+    const got = solveLp(model, Number(process.env.LP_SECONDS ?? 300))
+    saveLp(db, got)
+    const newer = got.filter(
+      (f) =>
+        f.lo > (result.lo[f.handle] ?? 0n) ||
+        f.hi < (result.hi[f.handle] ?? MAX64),
+    )
+    lps = newer.length
+    log('lp', {
+      targets: model.targets.length,
+      solved: got.length,
+      tightened: newer.length,
+      ms: Date.now() - started,
+    })
+    if (newer.length > 0) {
+      for (const f of newer) sourced.push({ ...f, why: { step: 'lp' } })
+      result = propagate(ops, types, sourced, rounds, dispatched, ms)
+    }
+  }
   if (!result.converged) {
     log('bounds did not converge', { rounds: result.rounds })
   }
@@ -369,6 +419,7 @@ export function deriveBounds(db: Db): DeriveStats {
     facts: facts.length,
     caps: caps.length + pools.length,
     flows,
+    lps,
     pairs: result.pairs,
     rounds: result.rounds,
     converged: result.converged,
@@ -460,6 +511,85 @@ function saveExact(
       for (const f of list) bound.run(f.handle, String(f.lo), String(f.hi))
     }
   })
+}
+
+/** Bump when the linear model changes: earlier results are then dropped */
+const LP_VERSION = '1'
+
+/**
+ * What earlier runs of the linked transactions proved, and when each target
+ * was last solved
+ */
+function lpCache(db: Db): { bounds: FlowBound[]; done: Map<number, number> } {
+  if (getSync(db, 'lp_version') !== LP_VERSION) {
+    db.exec('delete from lp_bound; delete from lp_done')
+    setSync(db, 'lp_version', LP_VERSION)
+  }
+  return {
+    bounds: all<{ handle: number; lo: string; hi: string }>(
+      db,
+      'select handle, lo, hi from lp_bound',
+    ).map((r) => ({ handle: r.handle, lo: BigInt(r.lo), hi: BigInt(r.hi) })),
+    done: new Map(
+      all<{ handle: number; at: number }>(
+        db,
+        'select handle, at from lp_done',
+      ).map((r) => [r.handle, r.at]),
+    ),
+  }
+}
+
+/** Each end kept where it is tightest, with what proves it */
+function saveLp(db: Db, got: LpResult[]): void {
+  const now = Date.now()
+  transaction(db, () => {
+    const done = db.prepare(
+      'insert or replace into lp_done (handle, at) values (?, ?)',
+    )
+    const was = db.prepare('select lo, hi from lp_bound where handle = ?')
+    const put = db.prepare(
+      `insert into lp_bound (handle, lo, hi, lo_cut, hi_cut) values (?1, ?2, ?3, ?4, ?5)
+       on conflict (handle) do update set lo = ?2, hi = ?3, lo_cut = ?4, hi_cut = ?5`,
+    )
+    const json = (c: Cut | undefined) => (c ? JSON.stringify(c) : null)
+    for (const f of got) {
+      done.run(f.handle, now)
+      if (!f.tighter) continue
+      const w = was.get(f.handle) as { lo: string; hi: string } | undefined
+      const keepLo = w && BigInt(w.lo) >= f.lo
+      const keepHi = w && BigInt(w.hi) <= f.hi
+      const old =
+        keepLo || keepHi
+          ? (db
+              .prepare('select lo_cut, hi_cut from lp_bound where handle = ?')
+              .get(f.handle) as {
+              lo_cut: string | null
+              hi_cut: string | null
+            })
+          : undefined
+      put.run(
+        f.handle,
+        keepLo ? (w?.lo as string) : String(f.lo),
+        keepHi ? (w?.hi as string) : String(f.hi),
+        keepLo ? (old?.lo_cut ?? null) : json(f.loCut),
+        keepHi ? (old?.hi_cut ?? null) : json(f.hiCut),
+      )
+    }
+  })
+}
+
+/** Why the linked transactions bounded a handle as they did, for the API */
+export function lpCut(
+  db: Db,
+  handle: number,
+  side: 'lo' | 'hi',
+): Cut | undefined {
+  const r = all<{ cut: string | null }>(
+    db,
+    `select ${side === 'lo' ? 'lo_cut' : 'hi_cut'} cut from lp_bound where handle = ?`,
+    handle,
+  )[0]
+  return r?.cut ? (JSON.parse(r.cut) as Cut) : undefined
 }
 
 /** Bounds earlier flow runs proved */

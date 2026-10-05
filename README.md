@@ -8,8 +8,8 @@ What the public data reveals about Zama confidential tokens:
 
 Node 22.13 or later and pnpm. [uv](https://docs.astral.sh/uv/) for the
 flow and exact steps of the derivation (`src/fhe/flow.py` with OR-tools,
-`src/fhe/exact.py` with Z3); without it those steps are skipped and the
-bounds are only looser.
+`src/fhe/exact.py` with Z3, `src/fhe/lp.py` with HiGHS); without it those
+steps are skipped and the bounds are only looser.
 
 ```sh
 pnpm install

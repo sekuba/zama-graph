@@ -40,11 +40,21 @@ A fresh database has about 60,000 transactions, about an hour of solving:
 run `EXACT_SECONDS=5000 pnpm dev bounds` once instead of waiting for the
 cycles to catch up.
 
+After the exact solves, the transactions linked through values not exactly
+known are solved together as one linear system (`src/fhe/lp.py`, HiGHS):
+batch totals, debits, sums and payouts across transactions, which no single
+transaction's solve sees. Each bound is proven in exact arithmetic from the
+solver's duals and kept with the bounds it rests on in `lp_bound`. A run
+spends at most `LP_SECONDS` (default 300) on the open transfer amounts:
+never solved first, newest first, then those solved longest ago, so every
+amount is solved again every few hours as the history grows.
+
 The solvers run at the lowest priority (`nice -n 19`) on half the cores,
 `SOLVER_WORKERS` to change it, so they yield to everything else on the
 machine. A solver that runs past its time and ten minutes is stopped, and
-without a network uv runs them on what it has cached. `BOUNDS_FLOW=0` and
-`BOUNDS_EXACT=0` skip a step: the bounds are then only looser.
+without a network uv runs them on what it has cached. `BOUNDS_FLOW=0`,
+`BOUNDS_EXACT=0` and `BOUNDS_LP=0` skip a step: the bounds are then only
+looser.
 
 ```sh
 pnpm install && pnpm build

@@ -263,6 +263,18 @@ const SCHEMA = `
     hi_cut text
   );
 
+  -- what the linked transactions proved, solved together as one linear
+  -- system, with the bounds each end rests on; and when each target was
+  -- last solved
+  create table if not exists lp_bound (
+    handle integer primary key,
+    lo text not null,
+    hi text not null,
+    lo_cut text,
+    hi_cut text
+  );
+  create table if not exists lp_done (handle integer primary key, at integer not null);
+
   -- the transactions the exact solver went through, and what it proved
   create table if not exists exact_tx (tx integer primary key, sig text);
   create table if not exists exact_bound (
