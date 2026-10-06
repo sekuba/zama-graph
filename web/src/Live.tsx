@@ -69,7 +69,7 @@ export function Live({ filter }: { filter: LiveFilter }) {
   return (
     <>
       <h2 className="text-xl font-semibold sm:text-2xl">
-        Encrypted amounts. <mark>Visible connections.</mark>
+        Private amounts (sometimes). <mark>Exposed links.</mark>
       </h2>
       {stats?.links && <Linkability s={stats} />}
       <Example
@@ -166,12 +166,11 @@ function Linkability({ s }: { s: Stats }) {
           {traced.toLocaleString('en-US')} analysed nonzero withdrawal requests
         </div>
         <details className="mt-3 text-xs text-ink-2">
-          <summary>How measured</summary>
+          <summary>How</summary>
           <p className="mt-2 max-w-lg">
-            Public transfers and amounts prove the funding address. One
-            depositor can make several deposits. Includes pending requests;
-            excludes zero withdrawals. Unresolved traces remain in the
-            denominator.{' '}
+            Public links and deposit / withdrawal amounts prove the funding address.
+	    One depositor can make several deposits. Includes pending requests,
+            excludes zero withdrawals.{' '}
             <a href="#about" className="underline">
               Method &amp; sources
             </a>
@@ -221,7 +220,7 @@ function Example({ events }: { events: LiveEvent[] }) {
   return (
     <section className="card p-3">
       <div className="mb-3 flex items-baseline justify-between gap-3">
-        <span className="text-xs text-muted">One real withdrawal</span>
+        <span className="text-xs text-muted">Example</span>
         <a href={`#tx/${e.tx}`} className="text-xs underline">
           Follow the evidence →
         </a>
