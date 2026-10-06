@@ -8,6 +8,28 @@ import {
   type Returns,
 } from './hubs'
 import { type Ev, type Ledger, ZERO } from './model'
+import type { TraceSummary } from './types'
+
+/** Address lists in the trace table are comma-separated, including empty strings. */
+export function traceSummary(row: {
+  origin: string
+  depositors: number
+  sender: string | null
+  sender_min: string | null
+  sender_max: string | null
+  hubs: string | null
+  via?: string | null
+}): TraceSummary {
+  return {
+    origin: row.origin as TraceSummary['origin'],
+    depositors: row.depositors,
+    sender: row.sender ?? undefined,
+    senderMin: row.sender_min ?? undefined,
+    senderMax: row.sender_max ?? undefined,
+    hubs: row.hubs ? row.hubs.split(',').filter(Boolean) : [],
+    via: row.via ? row.via.split(',').filter(Boolean) : [],
+  }
+}
 
 /** Most transfers one history walk visits before it gives up */
 export const TRACE_LIMIT = 3000

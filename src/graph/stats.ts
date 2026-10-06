@@ -2,7 +2,7 @@ import { all, type Db, one, setSync } from '../db'
 import { WILDCARD } from '../protocol'
 import { ROUTER_LEGS, ROUTER_REVEALED } from './hubs'
 import { MAX64, NAMED, ZERO } from './model'
-import { LINKS, SETS } from './traces'
+import { LINKS, SETS, traceSummary } from './traces'
 import type { Stats, TokenStats, TraceSummary } from './types'
 
 /**
@@ -193,15 +193,17 @@ export function deriveStats(db: Db): Stats {
     receiver: string
     sender: string
     lo: string
-    via: string
+    via: string | null
     origin: TraceSummary['origin']
     depositors: number
-    hubs: string
+    hubs: string | null
+    sender_min: string
+    sender_max: string | null
   }>(
     db,
     `select lower(hex(h.h)) handle, tx.hash tx, t.token, t.time,
-      t.burner, t.receiver, t.sender, t.lo, coalesce(t.via, '[]') via,
-      t.origin, t.depositors, coalesce(t.hubs, '[]') hubs
+      t.burner, t.receiver, t.sender, t.lo, t.via,
+      t.origin, t.depositors, t.hubs, t.sender_min, t.sender_max
     from trace t join unwrap u on u.handle = t.handle
     join handle h on h.id = t.handle join txn tx on tx.id = u.tx
     where u.fin_tx is not null and t.lo = t.hi and t.lo = u.clear
@@ -221,15 +223,7 @@ export function deriveStats(db: Db): Stats {
           to: example.receiver,
           amount: { lo: example.lo, hi: example.lo, source: 'finalize' },
           finalized: true,
-          trace: {
-            origin: example.origin,
-            depositors: example.depositors,
-            sender: example.sender,
-            senderMin: example.lo,
-            senderMax: example.lo,
-            hubs: JSON.parse(example.hubs) as string[],
-            via: JSON.parse(example.via) as string[],
-          },
+          trace: traceSummary(example),
         }
       : undefined,
     accounts: accounts.size,

@@ -15,7 +15,7 @@ import {
 import { ROUTER_LEGS, ROUTER_REVEALED } from './hubs'
 import { MAX64, NAMED, ZERO } from './model'
 import { storyOf } from './story'
-import { LINKS, SETS } from './traces'
+import { LINKS, SETS, traceSummary } from './traces'
 import type {
   About,
   AccountInfo,
@@ -37,7 +37,6 @@ import type {
   Status,
   TokenDetail,
   TokenInfo,
-  TraceSummary,
   TxDetail,
   UnwrapDetail,
   UserDecryption,
@@ -486,26 +485,6 @@ export function resolve(db: Db, query: string): Resolved {
     if (handleId(db, h) !== undefined) return { type: 'handle', value: h }
   }
   return { type: 'unknown', value: q }
-}
-
-function traceSummary(row: {
-  origin: string
-  depositors: number
-  sender: string | null
-  sender_min: string | null
-  sender_max: string | null
-  hubs: string | null
-  via?: string | null
-}): TraceSummary {
-  return {
-    origin: row.origin as TraceSummary['origin'],
-    depositors: row.depositors,
-    sender: row.sender ?? undefined,
-    senderMin: row.sender_min ?? undefined,
-    senderMax: row.sender_max ?? undefined,
-    hubs: row.hubs ? row.hubs.split(',').filter(Boolean) : [],
-    via: row.via ? row.via.split(',').filter(Boolean) : [],
-  }
 }
 
 /** Unwraps whose trace meets a condition of `LINKS` */
