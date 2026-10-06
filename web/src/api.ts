@@ -45,6 +45,9 @@ export const api = {
   address: (a: string) => get<AddressSummary>(`/api/address/${a}`),
   unwrap: (h: string) => get<UnwrapDetail>(`/api/unwrap/${h}`),
   handle: (h: string) => get<HandleDetail>(`/api/handle/${h}`),
+  handleEvidence: (h: string) =>
+    get<HandleDetail>(`/api/handle/${h}?details=1`),
+  txEvidence: (h: string) => get<TxDetail>(`/api/tx/${h}?details=1`),
   tx: (h: string) => get<TxDetail>(`/api/tx/${h}`),
   readers: () => get<ReadersSummary>('/api/readers'),
   hub: (a: string) => get<HubDetail>(`/api/hub/${a}`),

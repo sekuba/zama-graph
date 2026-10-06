@@ -63,20 +63,26 @@ export function txModels(
   })
 }
 
-/**
- * Solves the transactions with `exact.py` in parallel for at most `seconds`
- * and returns, per transaction it finished, the bounds it tightened. Any
- * failure returns less: the solver only ever adds facts.
- */
+export interface ExactResult {
+  bounds: FlowBound[]
+  complete: boolean
+}
+
+/** Returns proven bounds separately from completion, so unfinished work is retryable. */
 export function solveExact(
   models: TxModel[],
   seconds: number,
-): Map<number, FlowBound[]> {
+): Map<number, ExactResult> {
   const solver = process.env.EXACT_SOLVER ?? 'src/fhe/exact.py'
-  const input = JSON.stringify({ batch: models, seconds, objective: 5 })
+  const input = JSON.stringify({
+    batch: models,
+    seconds,
+    objective: 5,
+    budget: Number(process.env.EXACT_TX_SECONDS ?? 60),
+  })
   if (process.env.EXACT_DUMP) writeFileSync(process.env.EXACT_DUMP, input)
   const run = runSolver(solver, [], input, seconds)
-  const out = new Map<number, FlowBound[]>()
+  const out = new Map<number, ExactResult>()
   if (run.error || run.status !== 0) {
     log('exact solver failed', {
       error: String(run.error ?? ''),
@@ -88,6 +94,7 @@ export function solveExact(
     if (!line.startsWith('{')) continue
     const r = JSON.parse(line) as {
       tx: number
+      complete?: boolean
       bounds: Record<string, [string, string]>
     }
     const m = byTx.get(r.tx)
@@ -100,7 +107,7 @@ export function solveExact(
         found.push({ handle: Number(h), lo: BigInt(l), hi: BigInt(u) })
       }
     }
-    out.set(r.tx, found)
+    out.set(r.tx, { bounds: found, complete: r.complete === true })
   }
   return out
 }

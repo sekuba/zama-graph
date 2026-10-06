@@ -435,11 +435,29 @@ export function Section({
   title,
   note,
   children,
+  collapsed = false,
 }: {
+  collapsed?: boolean
   title: ReactNode
   note?: ReactNode
   children: ReactNode
 }) {
+  const [open, setOpen] = useState(!collapsed)
+  if (collapsed)
+    return (
+      <details
+        className="card p-3"
+        onToggle={(e) => setOpen(e.currentTarget.open)}
+      >
+        <summary className="font-semibold">
+          {title}{' '}
+          {note && (
+            <span className="text-xs font-normal text-muted">{note}</span>
+          )}
+        </summary>
+        {open && <div className="mt-3">{children}</div>}
+      </details>
+    )
   return (
     <section className="card p-3">
       <div className="mb-2 flex flex-wrap items-baseline gap-x-3">

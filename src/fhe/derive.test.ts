@@ -1,4 +1,5 @@
 import { expect } from 'earl'
+import { openDb } from '../db'
 import { FheType, Op } from '../protocol'
 import {
   type DagOp,
@@ -7,7 +8,34 @@ import {
   propagate,
   type Result,
 } from './bounds'
-import { routerMembers, startOf, stored } from './derive'
+import { routerMembers, saveExact, startOf, stored } from './derive'
+
+describe('exact cache', () => {
+  it('merges bounds above signed SQLite integer range without losing tightness', () => {
+    const db = openDb(':memory:')
+    const base = 1n << 63n
+    try {
+      const put = (lo: bigint, hi: bigint) =>
+        saveExact(
+          db,
+          new Map([[1, { complete: true, bounds: [{ handle: 1, lo, hi }] }]]),
+          new Map([[1, 'done']]),
+        )
+      put(base, base + 100n)
+      put(base + 10n, base + 90n)
+      put(base + 5n, base + 95n)
+      const row = db
+        .prepare('select lo, hi from exact_bound where handle = 1')
+        .get()
+      expect([row?.lo, row?.hi]).toEqual([
+        String(base + 10n),
+        String(base + 90n),
+      ])
+    } finally {
+      db.close()
+    }
+  })
+})
 
 const ZERO = '0x0000000000000000000000000000000000000000'
 const ROUTER = '0x00000000000000000000000000000000000000r0'

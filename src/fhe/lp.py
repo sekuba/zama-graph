@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.10"
-# dependencies = ["highspy>=1.7", "numpy"]
+# dependencies = ["highspy==1.15.1", "numpy==2.5.3"]
 # ///
 """
 Bounds from many transactions at once: a linear relaxation of everything
@@ -33,6 +33,7 @@ can only make such a bound looser, never wrong.
 
 import json
 import math
+import os
 import sys
 import time
 from fractions import Fraction
@@ -94,7 +95,7 @@ def rows_of(m, H, W):
             row({a: 1, r: -k}, '<=', k - 1)
         elif name == 'rem' and a is not None and k:
             q = f'q{i}'
-            extra[q] = (0, MAX64)
+            extra[q] = (0, U(a) // k)
             row({a: 1, q: -k, r: -1}, '=', 0)
             row({r: 1}, '<=', k - 1)
         elif name == 'select' and a is not None and L(a) == U(a):
@@ -179,22 +180,23 @@ def certify(rows, bounds, duals, target, sense):
     return best
 
 
-def cut_of(terms, const):
+def cut_of(terms, const, sense):
     """the certificate as plus and minus terms, largest first, the rest summed"""
-    plus = sorted(((v, dj * e) for v, dj, e in terms if dj * e > 0 and isinstance(v, int) and abs(dj) == 1), key=lambda x: -x[1])
-    minus = sorted(((v, -dj * e) for v, dj, e in terms if dj * e < 0 and isinstance(v, int) and abs(dj) == 1), key=lambda x: -x[1])
-    rest = sum((dj * e for v, dj, e in terms if not (isinstance(v, int) and abs(dj) == 1)), Fraction(0)) + const
-    more_plus = sum((x for _, x in plus[CUT_TERMS:]), Fraction(0)) + max(rest, Fraction(0))
-    more_minus = sum((x for _, x in minus[CUT_TERMS:]), Fraction(0)) + max(-rest, Fraction(0))
-
-    def fmt(x):
-        return str(math.floor(x)) if x.denominator == 1 else str(float(x))
-
+    plus = sorted(((v, abs(dj), e) for v, dj, e in terms if dj * e > 0 and isinstance(v, int)), key=lambda x: -x[1] * x[2])
+    minus = sorted(((v, abs(dj), e) for v, dj, e in terms if dj * e < 0 and isinstance(v, int)), key=lambda x: -x[1] * x[2])
+    rest = sum((dj * e for v, dj, e in terms if not isinstance(v, int)), Fraction(0)) + const
+    more_plus = sum((w * e for _, w, e in plus[CUT_TERMS:]), Fraction(0)) + max(rest, Fraction(0))
+    more_minus = sum((w * e for _, w, e in minus[CUT_TERMS:]), Fraction(0)) + max(-rest, Fraction(0))
     return {
-        'plus': [v for v, _ in plus[:CUT_TERMS]],
-        'minus': [v for v, _ in minus[:CUT_TERMS]],
-        'morePlus': [max(len(plus) - CUT_TERMS, 0), fmt(more_plus)],
-        'moreMinus': [max(len(minus) - CUT_TERMS, 0), fmt(more_minus)],
+        'plus': [v for v, _, _ in plus[:CUT_TERMS]],
+        'minus': [v for v, _, _ in minus[:CUT_TERMS]],
+        'plusValues': [str(e) for _, _, e in plus[:CUT_TERMS]],
+        'minusValues': [str(e) for _, _, e in minus[:CUT_TERMS]],
+        'plusWeights': [str(w) for _, w, _ in plus[:CUT_TERMS]],
+        'minusWeights': [str(w) for _, w, _ in minus[:CUT_TERMS]],
+        'rounding': 'up' if sense == 'min' else 'down',
+        'morePlus': [max(len(plus) - CUT_TERMS, 0), str(more_plus)],
+        'moreMinus': [max(len(minus) - CUT_TERMS, 0), str(more_minus)],
     }
 
 
@@ -210,6 +212,7 @@ def main():
 
     hs = highspy.Highs()
     hs.setOptionValue('output_flag', False)
+    hs.setOptionValue('threads', int(os.environ.get('SOLVER_WORKERS', '1')))
     # payout rows multiply by about 1e6, and so does their rounding: a
     # looser tolerance only costs tightness, the bound is proven exactly
     hs.setOptionValue('primal_feasibility_tolerance', 1e-4)
@@ -261,7 +264,7 @@ def main():
             if hs.getModelStatus() != highspy.HighsModelStatus.kOptimal:
                 continue
             val, terms, const = certify(rows, bounds, np.array(hs.getSolution().row_dual), t, sense)
-            found[sense] = (val, cut_of(terms, const))
+            found[sense] = (val, cut_of(terms, const, sense))
         solved += 1
         lo, hi = H[t]
         out = {'h': t, 'lo': str(lo), 'hi': str(hi), 'loCut': None, 'hiCut': None}

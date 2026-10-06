@@ -6,10 +6,11 @@ What the public data reveals about Zama confidential tokens:
 
 ## Running
 
-Node 22.13 or later and pnpm. [uv](https://docs.astral.sh/uv/) for the
-flow and exact steps of the derivation (`src/fhe/flow.py` with OR-tools,
-`src/fhe/exact.py` with Z3, `src/fhe/lp.py` with HiGHS); without it those
-steps are skipped and the bounds are only looser.
+Node 22.13 or later and pnpm. Routine derivation reuses cached bounds;
+advanced inference is manual: `pnpm dev derive --advanced`. It uses
+[uv](https://docs.astral.sh/uv/) for OR-tools, Z3 and HiGHS, with one worker
+by default. See [deployment settings](deploy/README.md) for selective steps
+and budgets.
 
 ```sh
 pnpm install

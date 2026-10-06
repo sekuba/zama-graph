@@ -112,14 +112,17 @@ export function serve(db: Db, config: Config): void {
 
   app.get(
     '/api/handle/:handle',
-    cached(120, (req) => handleDetail(db, String(req.params.handle))),
+    cached(120, (req) =>
+      handleDetail(db, String(req.params.handle), req.query.details === '1'),
+    ),
   )
 
   app.get(
     '/api/tx/:hash',
     cached(300, (req) => {
-      const d = txDetail(db, String(req.params.hash))
+      const d = txDetail(db, String(req.params.hash), req.query.details === '1')
       if (!d) return undefined
+      if (req.query.details === '1') return d
       // its unwraps, and the linked ones that went through it
       const handles = [...d.unwraps, ...d.linked.rows.map((l) => l.handle)]
       return { ...d, graph: historyGraph(db, handles) }

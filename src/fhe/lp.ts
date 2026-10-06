@@ -1,9 +1,8 @@
 import { log } from '../log'
 import { FHE_TYPE_BITS, OP_NAMES } from '../protocol'
 import type { DagOp, LedgerPair } from './bounds'
+import { validCut } from './certificate'
 import { type Cut, type FlowBound, runSolver } from './flow'
-
-const MAX64 = (1n << 64n) - 1n
 
 /**
  * What one transaction's exact solve cannot see: transactions constrain
@@ -102,7 +101,7 @@ export function lpModel(
       if (h === null || seen.has(h)) continue
       seen.add(h)
       const bits = FHE_TYPE_BITS[types[h] ?? 5] ?? 64
-      const top = bits >= 64 ? MAX64 : (1n << BigInt(bits)) - 1n
+      const top = (1n << BigInt(bits)) - 1n
       const u = hi[h] ?? top
       model.handles[h] = [String(lo[h] ?? 0n), String(u < top ? u : top), bits]
     }
@@ -149,6 +148,11 @@ export function solveLp(model: LpModel, seconds: number): LpResult[] {
       ? {
           plus: c.plus,
           minus: c.minus,
+          plusValues: c.plusValues,
+          minusValues: c.minusValues,
+          plusWeights: c.plusWeights,
+          minusWeights: c.minusWeights,
+          rounding: c.rounding,
           morePlus: { count: c.morePlus[0], total: c.morePlus[1] },
           moreMinus: { count: c.moreMinus[0], total: c.moreMinus[1] },
         }
@@ -167,21 +171,25 @@ export function solveLp(model: LpModel, seconds: number): LpResult[] {
     if (!was) continue
     // only the ends it tightened, each with what proves it: the other is
     // left open, so it keeps the reason it has (a debit, a fact)
-    const lo = r.loCut ? BigInt(r.lo) : 0n
-    const hi = r.hiCut ? BigInt(r.hi) : MAX64
+    const loCut = cut(r.loCut)
+    const hiCut = cut(r.hiCut)
+    if ((loCut && !validCut(loCut, r.lo)) || (hiCut && !validCut(hiCut, r.hi)))
+      continue
+    const lo = loCut ? BigInt(r.lo) : 0n
+    const hi = hiCut ? BigInt(r.hi) : (1n << BigInt(was[2])) - 1n
     out.push({
       handle: r.h,
       lo,
       hi,
-      loCut: cut(r.loCut),
-      hiCut: cut(r.hiCut),
+      loCut,
+      hiCut,
       tighter: lo > BigInt(was[0]) || hi < BigInt(was[1]),
     })
   }
   return out
 }
 
-interface RawCut {
+interface RawCut extends Omit<Cut, 'morePlus' | 'moreMinus'> {
   plus: number[]
   minus: number[]
   morePlus: [number, string]

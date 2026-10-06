@@ -24,8 +24,8 @@ export function Readers() {
           </li>
           <li>
             <mark>
-              Any {r.trust.publicThreshold} can decrypt the whole history,
-              undetectably.
+              Enough KMS key shares can expose the whole history without an
+              onchain decryption request.
             </mark>
           </li>
           <li>

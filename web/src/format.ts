@@ -78,3 +78,9 @@ export function pct(part: number, whole: number): string {
   const shown = Math.max(Math.floor(p * f + 1e-9) / f, part > 0 ? 0.1 : 0)
   return `${shown.toFixed(digits)}%`
 }
+
+/** Preserve exact fractions in certificates rather than rounding through a float. */
+export function rationalUnits(value: string): string {
+  const [n, d] = value.split('/')
+  return d && d !== '1' ? `(${units(n as string)} / ${d})` : units(n as string)
+}

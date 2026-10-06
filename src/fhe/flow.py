@@ -32,6 +32,7 @@ in the residual graph of x without the arc itself.
 import os
 import sys
 import time
+from multiprocessing import active_children
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 
 import numpy as np
@@ -238,9 +239,12 @@ def solve(n, net, deadline, workers):
                     if nxt is not None:
                         pending.add(pool.submit(extremes, nxt))
         finally:
+            children = active_children()
             pool.shutdown(wait=False, cancel_futures=True)
-            if hasattr(pool, 'kill_workers'):
-                pool.kill_workers()
+            for child in children:
+                if child.is_alive():
+                    child.terminate()
+                child.join()
     # spot check a few tightened arcs against a different algorithm
     tightened = [r for r in found if r[1] > lo[r[0]] or r[2] < hi[r[0]]]
     for a, l, h, _ in tightened[:: max(1, len(tightened) // 3)][:3]:
@@ -263,7 +267,7 @@ def solve(n, net, deadline, workers):
 def main():
     deadline = time.time() + float(sys.argv[1] if len(sys.argv) > 1 else 120)
     nets = read()
-    workers = int(os.environ.get('SOLVER_WORKERS') or max(1, (os.cpu_count() or 2) // 2))
+    workers = int(os.environ.get('SOLVER_WORKERS') or 1)
     # small networks first: they settle many arcs cheaply
     for n in sorted(range(len(nets)), key=lambda k: len(nets[k]['lo'])):
         if time.time() > deadline:

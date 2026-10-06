@@ -1,8 +1,8 @@
-import { readFileSync, unlinkSync, writeFileSync } from 'node:fs'
 import { check } from './check'
 import { loadConfig } from './config'
 import { openDb } from './db'
 import { deriveAll } from './derive'
+import { exclusive } from './deriveLock'
 import { syncContractNames } from './eth/contracts'
 import { syncEthereum } from './eth/indexer'
 import { syncNames } from './eth/names'
@@ -17,8 +17,8 @@ const USAGE = `zama-graph <command>
 
   sync [--follow] [--only eth|gateway]   index Ethereum and the Zama Gateway, then derive
   serve                                  start the API and web UI
-  derive                                 bounds, hubs, traces and stats from the index
-  bounds                                 only propagate bounds over the FHE operations
+  derive [--advanced]                    bounds, hubs, traces and stats from the index
+  bounds [--advanced]                    only propagate bounds over the FHE operations
   names                                  ENS and GNS names, and contract names (with ETHERSCAN_API_KEY)
   check                                  consistency checks of the index
   decrypt [--limit n] [--dry]            ask Zama's relayer for publicly decryptable
@@ -36,6 +36,13 @@ async function main(argv: string[]): Promise<void> {
   }
 
   const config = loadConfig()
+  if (rest.includes('--advanced')) {
+    if (command !== 'derive' && command !== 'bounds')
+      throw new Error('--advanced is supported by derive and bounds')
+    for (const name of ['FLOW', 'EXACT', 'LP'])
+      process.env[`BOUNDS_${name}`] = '1'
+    process.env.BOUNDS_ROUNDS ??= '1000000'
+  }
   const db = openDb(config.dbPath)
 
   switch (command) {
@@ -157,43 +164,6 @@ async function retrying(name: string, run: () => Promise<void>): Promise<void> {
       })
       await sleep(60_000)
     }
-  }
-}
-
-/**
- * Runs a derive unless another process is deriving the same database: the
- * follow loop and a run by hand would both rewrite the derived tables
- */
-function exclusive(dbPath: string, run: () => void): void {
-  const lock = `${dbPath}.derive.lock`
-  let holder = 0
-  try {
-    holder = Number(readFileSync(lock, 'utf8'))
-  } catch {
-    // no lock
-  }
-  if (holder && holder !== process.pid && alive(holder)) {
-    log('derive skipped: another process is deriving', { pid: holder })
-    return
-  }
-  writeFileSync(lock, String(process.pid))
-  try {
-    run()
-  } finally {
-    try {
-      unlinkSync(lock)
-    } catch {
-      // already gone
-    }
-  }
-}
-
-function alive(pid: number): boolean {
-  try {
-    process.kill(pid, 0)
-    return true
-  } catch {
-    return false
   }
 }
 

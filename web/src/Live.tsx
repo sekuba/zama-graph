@@ -22,7 +22,7 @@ const FILTERS: Record<LiveFilter, [label: string, title: string]> = {
   all: ['all', 'every wrap, transfer and unwrap'],
   linked: ['linked', 'unwraps provably funded by one depositor'],
   pinned: ['exact', 'transfers whose exact amount is known'],
-  unwraps: ['unwraps', 'every unwrap, with where it came from'],
+  unwraps: ['withdrawals', 'every unwrap, with where it came from'],
   named: ['named', 'what accounts with an ENS or GNS name did'],
   self: ['linked to itself', 'unwraps provably funded by their own wraps'],
   other: ['linked to another', 'unwraps provably funded by one other address'],
@@ -41,10 +41,10 @@ const FILTERS: Record<LiveFilter, [label: string, title: string]> = {
     'router deposits whose other legs are provably zero',
   ],
 }
-const TABS: LiveFilter[] = ['all', 'linked', 'pinned', 'unwraps', 'named']
+const TABS: LiveFilter[] = ['unwraps', 'linked', 'several', 'all']
 
 /** How often the live view refreshes */
-const REFRESH_MS = 20_000
+const REFRESH_MS = 60_000
 
 /**
  * The page without a query: what the public data reveals, as numbers, and
@@ -68,33 +68,35 @@ export function Live({ filter }: { filter: LiveFilter }) {
 
   return (
     <>
-      <div className="grid gap-1">
-        <h2 className="text-lg font-semibold sm:text-xl">
-          Zama hides amounts, sometimes. <mark>It never hides links.</mark>
-        </h2>
-        <p className="lead">
-          Encryption hides amounts, not links: every transfer names both sides,
-          and every encrypted amount is a public formula over earlier ones.{' '}
-          <a href="#about" className="underline">
-            Method
-          </a>
-        </p>
-      </div>
-      {stats?.transfers && <Scoreboard s={stats} filter={filter} />}
-      {stats?.sets && stats.months && (
-        <div className="grid gap-3 md:grid-cols-2">
-          <SetBars sets={stats.sets} filter={filter} />
-          <MonthBars months={stats.months} filter={filter} />
+      <h2 className="text-xl font-semibold sm:text-2xl">
+        Encrypted amounts. <mark>Visible connections.</mark>
+      </h2>
+      {stats?.links && <Linkability s={stats} />}
+      <Example
+        events={stats?.example ? [stats.example] : (feed?.events ?? [])}
+      />
+      <details className="card p-3">
+        <summary className="text-sm">
+          More public data · amounts, balances, operators
+        </summary>
+        <div className="mt-3 grid gap-3">
+          {stats?.transfers && <Scoreboard s={stats} filter={filter} />}
+          {stats?.sets && stats.months && (
+            <div className="grid gap-3 md:grid-cols-2">
+              <SetBars sets={stats.sets} filter={filter} />
+              <MonthBars months={stats.months} filter={filter} />
+            </div>
+          )}
+          {stats?.transfers && <ByToken s={stats} />}
         </div>
-      )}
-      {stats?.transfers && <ByToken s={stats} />}
+      </details>
       <section className="card scroll-mt-3 p-3" ref={ref}>
         <div className="mb-2 flex flex-wrap items-baseline gap-1 text-xs">
           {[...TABS, ...(TABS.includes(filter) ? [] : [filter])].map((f) => (
             <a
               key={f}
               href={liveHref(f)}
-              onClick={f === 'all' ? home : undefined}
+              onClick={f === 'unwraps' ? home : undefined}
               className={`toggle ${filter === f ? 'on' : ''}`}
               title={FILTERS[f][1]}
             >
@@ -108,7 +110,7 @@ export function Live({ filter }: { filter: LiveFilter }) {
         {feed && (
           // the rows of the previous filter, faded until the new ones are in
           <div style={{ opacity: feed.filter === filter ? 1 : 0.4 }}>
-            <Feed events={feed.events} now={feed.now} />
+            <Feed key={filter} events={feed.events} now={feed.now} />
           </div>
         )}
       </section>
@@ -142,6 +144,108 @@ function useFeed(filter: LiveFilter) {
     }
   }, [filter])
   return feed
+}
+
+function Linkability({ s }: { s: Stats }) {
+  const { oneDepositor, traced } = s.links
+  const share = traced ? oneDepositor / traced : 0
+  return (
+    <section className="card grid grid-cols-[minmax(0,1fr)_110px] items-center gap-3 p-3 sm:grid-cols-[1fr_220px] sm:gap-4 sm:p-4">
+      <div>
+        <a
+          href="#linked"
+          className="text-5xl font-semibold tracking-tight sm:text-6xl"
+        >
+          {pct(oneDepositor, traced)}
+        </a>
+        <div className="mt-1 text-lg">
+          linked to <mark>one depositor</mark>
+        </div>
+        <div className="mt-2 text-xs text-muted">
+          {oneDepositor.toLocaleString('en-US')} /{' '}
+          {traced.toLocaleString('en-US')} analysed nonzero withdrawal requests
+        </div>
+        <details className="mt-3 text-xs text-ink-2">
+          <summary>How measured</summary>
+          <p className="mt-2 max-w-lg">
+            Public transfers and amounts prove the funding address. One
+            depositor can make several deposits. Includes pending requests;
+            excludes zero withdrawals. Unresolved traces remain in the
+            denominator.{' '}
+            <a href="#about" className="underline">
+              Method &amp; sources
+            </a>
+          </p>
+        </details>
+      </div>
+      <div>
+        <div
+          className="grid grid-cols-10 gap-1"
+          role="img"
+          aria-label={`${pct(oneDepositor, traced)} linked to one depositor`}
+        >
+          {Array.from({ length: 100 }, (_, cell) => cell).map((cell) => (
+            <span
+              key={`cell-${cell}`}
+              className="aspect-square rounded-sm"
+              style={{
+                background: `linear-gradient(90deg, var(--zama) ${Math.max(0, Math.min(1, share * 100 - cell)) * 100}%, var(--axis) 0)`,
+              }}
+            />
+          ))}
+        </div>
+        <div className="mt-2 flex flex-col gap-1 text-[11px] text-muted sm:flex-row sm:justify-between">
+          <span>
+            <span className="dot" style={{ background: 'var(--zama)' }} /> one
+            depositor
+          </span>
+          <span>other / unresolved</span>
+        </div>
+      </div>
+    </section>
+  )
+}
+
+/** A real withdrawal already in the feed; no additional API request. */
+function Example({ events }: { events: LiveEvent[] }) {
+  const linked = events.filter(
+    (e) =>
+      e.kind === 'unwrap' &&
+      e.finalized &&
+      e.trace?.sender &&
+      e.trace.senderMin === e.amount.lo &&
+      e.amount.lo !== '0',
+  )
+  const e = linked.find((e) => e.trace?.sender !== e.from) ?? linked[0]
+  if (!e?.trace?.sender) return null
+  return (
+    <section className="card p-3">
+      <div className="mb-3 flex items-baseline justify-between gap-3">
+        <span className="text-xs text-muted">One real withdrawal</span>
+        <a href={`#tx/${e.tx}`} className="text-xs underline">
+          Follow the evidence →
+        </a>
+      </div>
+      <div className="grid items-center gap-2 sm:grid-cols-[1fr_auto_1fr]">
+        <div className="rounded border border-[var(--axis)] p-3">
+          <div className="mb-1 text-xs text-muted">Depositor</div>
+          <Address address={e.trace.sender} />
+        </div>
+        <div className="flex items-center justify-center gap-2 px-2 text-xs text-ink-2">
+          <span className="text-xl sm:hidden">↓</span>
+          <span className="hidden text-xl sm:inline">→</span>
+          <span>public transfer trail</span>
+          <span className="hidden text-xl sm:inline">→</span>
+        </div>
+        <div className="rounded border border-axis p-3">
+          <div className="mb-1 text-xs text-muted">
+            Withdrawal · <Amount a={e.amount} /> {e.symbol}
+          </div>
+          <Address address={e.to} />
+        </div>
+      </div>
+    </section>
+  )
 }
 
 function Scoreboard({ s, filter }: { s: Stats; filter: LiveFilter }) {
@@ -250,7 +354,7 @@ function Scoreboard({ s, filter }: { s: Stats; filter: LiveFilter }) {
         <Stat
           value={`${TRUST.publicThreshold} of ${TRUST.kmsNodes}`}
           href="#readers"
-          label="KMS operators can decrypt everything"
+          label="signatures required for public decryption"
         />
         <Facts>
           <li>
@@ -443,6 +547,7 @@ const GROUP = 3
 
 function Feed({ events, now }: { events: LiveEvent[]; now: number }) {
   const [open, setOpen] = useState<Set<string>>(new Set())
+  const [limit, setLimit] = useState(12)
   if (events.length === 0) return <Muted>Nothing yet.</Muted>
   // events of one transaction are adjacent (newest first)
   const groups: LiveEvent[][] = []
@@ -452,36 +557,47 @@ function Feed({ events, now }: { events: LiveEvent[]; now: number }) {
     else groups.push([e])
   }
   return (
-    <table className="stack">
-      <thead>
-        <tr>
-          <th>When</th>
-          <th>What</th>
-          <th>From</th>
-          <th>To</th>
-          <th className="text-right">Amount</th>
-          <th>What is known</th>
-        </tr>
-      </thead>
-      <tbody>
-        {groups.flatMap((g) => {
-          const first = g[0] as LiveEvent
-          if (g.length < GROUP || open.has(first.tx)) {
-            return g.map((e) => (
-              <Row key={`${e.tx}:${e.handle}:${e.kind}`} e={e} now={now} />
-            ))
-          }
-          return [
-            <GroupRow
-              key={first.tx}
-              g={g}
-              now={now}
-              onOpen={() => setOpen((o) => new Set(o).add(first.tx))}
-            />,
-          ]
-        })}
-      </tbody>
-    </table>
+    <>
+      <table className="stack">
+        <thead>
+          <tr>
+            <th>When</th>
+            <th>What</th>
+            <th>From</th>
+            <th>To</th>
+            <th className="text-right">Amount</th>
+            <th>What is known</th>
+          </tr>
+        </thead>
+        <tbody>
+          {groups.slice(0, limit).flatMap((g) => {
+            const first = g[0] as LiveEvent
+            if (g.length < GROUP || open.has(first.tx)) {
+              return g.map((e) => (
+                <Row key={`${e.tx}:${e.handle}:${e.kind}`} e={e} now={now} />
+              ))
+            }
+            return [
+              <GroupRow
+                key={first.tx}
+                g={g}
+                now={now}
+                onOpen={() => setOpen((o) => new Set(o).add(first.tx))}
+              />,
+            ]
+          })}
+        </tbody>
+      </table>
+      {groups.length > limit && (
+        <button
+          type="button"
+          className="toggle mt-3"
+          onClick={() => setLimit((n) => n + 12)}
+        >
+          Show more withdrawals / transactions
+        </button>
+      )}
+    </>
   )
 }
 

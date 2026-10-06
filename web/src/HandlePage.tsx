@@ -7,7 +7,7 @@ import type {
   WhyTerm,
 } from '../../src/graph/types'
 import { api, useApi } from './api'
-import { gatewayTxUrl, shortHex, units } from './format'
+import { gatewayTxUrl, rationalUnits, shortHex, units } from './format'
 import { labelOf, useLabels } from './labels'
 import { groupOps, type OpGroup } from './opNotes'
 import {
@@ -32,13 +32,78 @@ import {
  * public: the tree below goes down to clear constants, inputs and values
  * somebody decrypted.
  */
-export function HandlePage({ handle }: { handle: string }) {
-  const { data: d, error } = useApi(api.handle, handle)
+function HandleEvidence({ handle }: { handle: string }) {
+  const { data: d, error } = useApi(api.handleEvidence, handle)
   if (!d) return <Loading error={error} />
-  // the executor logs an input as an operation on itself: not a use
   const usedBy = d.usedBy.filter(
     (o) => !(o.op === 'input' && o.handle === d.handle),
   )
+  return (
+    <>
+      <About d={d} />
+      <Explanations d={d} made={madeOf(d)} />
+      {!d.input && d.expression.length > 0 && (
+        <Section collapsed title="Computation" note="from FHEVMExecutor events">
+          <p className="mb-2 text-xs text-ink-2">
+            How the contract computed this value: each operation, with the
+            values it used indented under it, down to encrypted inputs and
+            constants. Handles are highlighted when their value is known
+            exactly, underlined when only a range is, grey when nothing narrows
+            it.
+          </p>
+          <Tree nodes={d.expression} root={d.handle} />
+        </Section>
+      )}
+      {usedBy.length > 0 && (
+        <Section collapsed title="Used by">
+          <p className="mb-2 text-xs text-ink-2">
+            The operations that took this value as one of their inputs.
+          </p>
+          <OpList ops={usedBy} />
+        </Section>
+      )}
+      {d.gateway.length > 0 && (
+        <Section collapsed title="Decryptions" note="on the Zama Gateway">
+          <table className="stack">
+            <tbody>
+              {d.gateway.map((g) => (
+                <tr key={g.id}>
+                  <td>
+                    <Time t={g.time} />
+                  </td>
+                  <td>
+                    <span className="chip">{g.kind}</span>
+                  </td>
+                  <td>
+                    {g.user ? (
+                      <Address address={g.user} />
+                    ) : (
+                      <Muted>anyone</Muted>
+                    )}
+                  </td>
+                  <td>
+                    <a
+                      href={gatewayTxUrl(g.tx)}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="mono"
+                    >
+                      {shortHex(g.tx, 4)} ↗
+                    </a>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </Section>
+      )}
+    </>
+  )
+}
+
+export function HandlePage({ handle }: { handle: string }) {
+  const { data: d, error } = useApi(api.handle, handle)
+  if (!d) return <Loading error={error} />
   const made = madeOf(d)
   return (
     <>
@@ -92,63 +157,9 @@ export function HandlePage({ handle }: { handle: string }) {
           )}
         </div>
       </section>
-      <About d={d} />
-      <Explanations d={d} made={made} />
-      {!d.input && d.expression.length > 0 && (
-        <Section title="Computation" note="from FHEVMExecutor events">
-          <p className="mb-2 text-xs text-ink-2">
-            How the contract computed this value: each operation, with the
-            values it used indented under it, down to encrypted inputs and
-            constants. Handles are highlighted when their value is known
-            exactly, underlined when only a range is, grey when nothing narrows
-            it.
-          </p>
-          <Tree nodes={d.expression} root={d.handle} />
-        </Section>
-      )}
-      {usedBy.length > 0 && (
-        <Section title="Used by">
-          <p className="mb-2 text-xs text-ink-2">
-            The operations that took this value as one of their inputs.
-          </p>
-          <OpList ops={usedBy} />
-        </Section>
-      )}
-      {d.gateway.length > 0 && (
-        <Section title="Decryptions" note="on the Zama Gateway">
-          <table className="stack">
-            <tbody>
-              {d.gateway.map((g) => (
-                <tr key={g.id}>
-                  <td>
-                    <Time t={g.time} />
-                  </td>
-                  <td>
-                    <span className="chip">{g.kind}</span>
-                  </td>
-                  <td>
-                    {g.user ? (
-                      <Address address={g.user} />
-                    ) : (
-                      <Muted>anyone</Muted>
-                    )}
-                  </td>
-                  <td>
-                    <a
-                      href={gatewayTxUrl(g.tx)}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="mono"
-                    >
-                      {shortHex(g.tx, 4)} ↗
-                    </a>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </Section>
-      )}
+      <Section collapsed title="Why this amount · evidence">
+        <HandleEvidence handle={handle} />
+      </Section>
     </>
   )
 }
@@ -999,6 +1010,14 @@ function FlowCut({
   /** a token's flow, or the linked transactions solved together */
   kind?: 'flow' | 'lp'
 }) {
+  // Older APIs lack proof snapshots; do not substitute today's bounds.
+  if (
+    [...cut.plus, ...cut.minus].some((t) => t.value === undefined) ||
+    ![cut.morePlus.total, cut.moreMinus.total].every((s) =>
+      /^-?\d+(\/\d+)?$/.test(s),
+    )
+  )
+    return null
   const hi = side === 'hi'
   const list = (
     terms: WhyTerm[],
@@ -1007,7 +1026,7 @@ function FlowCut({
     /** the bound these terms count at */
     end: 'at most' | 'at least',
   ) =>
-    terms.length > 0 && (
+    (terms.length > 0 || more.total !== '0') && (
       <div className="grid gap-0.5">
         <div className="text-ink-2">{label}</div>
         <ul className="grid gap-0.5 pl-3">
@@ -1016,17 +1035,11 @@ function FlowCut({
               key={t.handle}
               className="flex flex-wrap items-baseline gap-x-2"
             >
-              {/* only the end that counts in the sum */}
-              {t.amount.hi !== undefined && t.amount.lo === t.amount.hi ? (
-                <Amount a={t.amount} handle={t.handle} />
-              ) : (
-                <span className="mono">
-                  {units(
-                    end === 'at least' ? t.amount.lo : (t.amount.hi ?? '0'),
-                  )}
-                </span>
+              {t.weight && t.weight !== '1' && (
+                <span className="mono">{t.weight} ×</span>
               )}
-              <Handle h={t.handle} amount={t.amount} />
+              <span className="mono">{units(t.value ?? '0')}</span>
+              {t.handle && <Handle h={t.handle} amount={t.amount} />}
               {t.role && (
                 <Muted>
                   <Role text={t.role} />
@@ -1038,15 +1051,16 @@ function FlowCut({
             <li>
               <Muted>
                 and {more.count} more, {end}{' '}
-                <span className="mono">{units(more.total)}</span> together
+                <span className="mono">{rationalUnits(more.total)}</span>{' '}
+                together
               </Muted>
             </li>
           ) : (
             more.total !== '0' && (
               <li>
                 <Muted>
-                  and clear constants:{' '}
-                  <span className="mono">{units(more.total)}</span>
+                  other contributions:{' '}
+                  <span className="mono">{rationalUnits(more.total)}</span>
                 </Muted>
               </li>
             )
@@ -1080,6 +1094,9 @@ function FlowCut({
             : 'and at most this could leave through these instead:',
         hi ? 'at least' : 'at most',
       )}
+      <div className="text-xs text-muted">
+        Bounds at the solve{cut.rounding && `, rounded ${cut.rounding}`}.
+      </div>
       <div className="text-ink-2">
         Which leaves {hi ? 'at most' : 'at least'}{' '}
         <span className="mono">{units(cut.total)}</span>.

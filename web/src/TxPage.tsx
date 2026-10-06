@@ -2,17 +2,19 @@ import { useEffect, useState } from 'react'
 import type { TxDetail, UnwrapDetail } from '../../src/graph/types'
 import { api, useApi } from './api'
 import { Linked, Unwrap } from './Flow'
-import { plural, units } from './format'
+import { units } from './format'
 import { OpSteps } from './HandlePage'
 import { History } from './HistoryGraph'
 import { labelOf, useLabels } from './labels'
 import { opNotes } from './opNotes'
+import { transferGroups } from './transferSummary'
 import {
   Address,
   Amount,
   AmountLink,
   Kind,
   Loading,
+  Section,
   Time,
   Tx,
   ZERO,
@@ -112,7 +114,6 @@ export function TxPage({ hash }: { hash: string }) {
             sender holds moves 0, so that nobody learns the balance.
           </p>
         )}
-        <Sums d={d} />
       </section>
       {unwraps.map((u) => (
         <Unwrap key={u.handle} d={u} />
@@ -126,26 +127,9 @@ export function TxPage({ hash }: { hash: string }) {
             : 'via this tx'
         }
       />
-      {d.ops.length > 0 && (
-        <details className="card p-3">
-          <summary className="text-sm">
-            <span className="font-semibold">FHE operations</span>{' '}
-            <span className="text-xs text-muted">
-              {plural(d.ops.length, 'operation')}, grouped by the transfer they
-              make
-            </span>
-          </summary>
-          <p className="mt-2 mb-2 text-xs text-ink-2">
-            What the contracts computed on encrypted values, one operation per
-            row. A select is an encrypted if/else: select(condition, a, b) is a
-            when the condition is true, b otherwise. A trivial turns a clear
-            number into an encrypted one. Handles are highlighted when their
-            value is known exactly, underlined when only a range is, grey when
-            nothing narrows it.
-          </p>
-          <OpSteps ops={d.ops} notes={opNotes(d.ops)} />
-        </details>
-      )}
+      <Section collapsed title="Amount details · FHE operations">
+        <TxEvidence hash={hash} />
+      </Section>
     </>
   )
 }
@@ -155,6 +139,17 @@ export function TxPage({ hash }: { hash: string }) {
  * alone: who sent to whom, and what is known of each amount. Recipients of
  * one kind (three batchers) are counted together.
  */
+function TxEvidence({ hash }: { hash: string }) {
+  const { data: d, error } = useApi(api.txEvidence, hash)
+  if (!d) return <Loading error={error} />
+  return (
+    <>
+      <Sums d={d} />
+      <OpSteps ops={d.ops} notes={opNotes(d.ops)} />
+    </>
+  )
+}
+
 function Summary({ d }: { d: TxDetail }) {
   useLabels()
   const xs = d.transfers
@@ -171,15 +166,15 @@ function Summary({ d }: { d: TxDetail }) {
       )
     </>
   )
-  const senders = [...new Set(xs.map((t) => t.from))]
+  const senders = transferGroups(xs)
   return (
     <div className="mt-1 grid gap-0.5 text-sm">
-      {senders.map((from) => {
-        const list = xs.filter((t) => t.from === from)
+      {senders.map((list) => {
+        const from = list[0]?.from ?? ZERO
         const symbol = list[0]?.symbol ?? ''
         if (from === ZERO) {
           return (
-            <div key={from}>
+            <div key={`${from}:${list[0]?.token}`}>
               {list.map((t) => (
                 <span key={t.log}>
                   <Address address={t.to} /> wrapped{' '}
@@ -220,7 +215,7 @@ function Summary({ d }: { d: TxDetail }) {
           )
         })
         return (
-          <div key={from}>
+          <div key={`${from}:${list[0]?.token}`}>
             <Address address={from} /> sent {symbol}{' '}
             {parts.map((p, i) => (
               // biome-ignore lint/suspicious/noArrayIndexKey: parts of one sentence

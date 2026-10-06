@@ -17,7 +17,7 @@ export type Route =
  */
 export function parse(hash: string): Route {
   const h = decodeURIComponent(hash.replace(/^#/, '')).trim().toLowerCase()
-  if (!h) return { page: 'live', filter: 'all' }
+  if (!h) return { page: 'live', filter: 'unwraps' }
   const filter = LIVE_FILTERS.find((f) => f === h)
   if (filter) return { page: 'live', filter }
   if (/^0x[0-9a-f]{40}$/.test(h)) return { page: 'address', value: h }
@@ -35,7 +35,7 @@ export function parse(hash: string): Route {
 
 /** The live view, narrowed to a filter */
 export function liveHref(filter: LiveFilter): string {
-  return filter === 'all' ? './' : `#${filter}`
+  return filter === 'unwraps' ? './' : `#${filter}`
 }
 
 /** Back to the live view without reloading the page */

@@ -192,6 +192,12 @@ export interface Cut {
   /** the largest terms */
   plus: number[]
   minus: number[]
+  /** Exact values and coefficients at the solve, in the same order as the handles. */
+  plusValues?: string[]
+  minusValues?: string[]
+  plusWeights?: string[]
+  minusWeights?: string[]
+  rounding?: 'up' | 'down'
   /** how many other terms there are, and their total at the solve */
   morePlus: { count: number; total: string }
   moreMinus: { count: number; total: string }
@@ -247,7 +253,11 @@ export function solveFlows(nets: Network[], seconds: number): FlowBound[] {
         const [count, total] = text.split(':')
         return { count: Number(count), total: total ?? '0' }
       }
+      const values = (list: string, end: bigint[]) =>
+        list === '-' ? [] : list.split(',').map((a) => String(end[Number(a)]))
       const c: Cut = {
+        plusValues: values(p[4] as string, p[3] === 'hi' ? n.hi : n.lo),
+        minusValues: values(p[6] as string, p[3] === 'hi' ? n.lo : n.hi),
         plus: handles(p[4] as string),
         morePlus: more(p[5] as string),
         minus: handles(p[6] as string),

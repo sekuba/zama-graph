@@ -14,47 +14,36 @@ stillnot.slashveto.me      cloudflared  ->  127.0.0.1:3021  (zama-graph-serve)
 
 Sync and serve are separate units so that the sync failing (an RPC being
 down) restarts only the sync and the API stays up. The sync derives bounds,
-traces and the scoreboard every ten minutes; a run takes a few minutes and
-about 2 GB of memory at the current size. Each of the propagation passes
-runs to its fixpoint or for `BOUNDS_SECONDS` (default 60), whichever comes
-first: rounding in vault share maths makes some bounds creep for millions
-of rounds, and stopping early only leaves them looser.
+traces and stats every ten minutes. Routine runs
+use at most 40 propagation rounds per pass, with a 60-second pass budget,
+and reuse valid cached solver results. Advanced inference is **off by default**.
 
-The flow step solves each token's whole history as one network
-(`src/fhe/flow.py`, OR-tools, through [uv](https://docs.astral.sh/uv/)):
-every balance is what came in minus what went out and never goes negative.
-It spends at most `FLOW_SECONDS` (default 120) per run on arcs never solved
-and keeps what it proved, with the cut that proves it, in `flow_bound`, so
-the first runs after a fresh sync catch up over a few cycles. An arc solved
-once keeps what it proved then while the bounds around it narrow, so once a
-day a run solves every arc again from that day's bounds (about 15 minutes,
-at most `FLOW_FRESH_SECONDS`, default 1800); `FLOW_FRESH=1` forces it.
+Run it manually on the API machine when capacity is available:
 
-Then each transaction is solved exactly with Z3 (`src/fhe/exact.py`):
-every operation with its encrypted arithmetic, every proven bound, each
-open value maximised and minimised. A run spends at most `EXACT_SECONDS`
-(default 180) on transactions not solved yet, oldest first, then on those
-whose values narrowed since they were solved (later events, other solves),
-and keeps what it proved in `exact_tx` and `exact_bound` after each batch.
-A fresh database has about 60,000 transactions, about an hour of solving:
-run `EXACT_SECONDS=5000 pnpm dev bounds` once instead of waiting for the
-cycles to catch up.
+```sh
+pnpm dev derive --advanced
+```
 
-After the exact solves, the transactions linked through values not exactly
-known are solved together as one linear system (`src/fhe/lp.py`, HiGHS):
-batch totals, debits, sums and payouts across transactions, which no single
-transaction's solve sees. Each bound is proven in exact arithmetic from the
-solver's duals and kept with the bounds it rests on in `lp_bound`. A run
-spends at most `LP_SECONDS` (default 300) on the open transfer amounts:
-never solved first, newest first, then those solved longest ago, so every
-amount is solved again every few hours as the history grows.
+This enables token flows (OR-tools), exact transaction arithmetic (Z3), and
+linked transaction bounds (HiGHS), through uv. Defaults are one worker at
+`nice -n 19`, with solve budgets of 120 seconds for flows (300 for a fresh
+pass), 180 for exact transactions, and 300 for HiGHS. Model building and
+loading can add time and memory beyond these budgets. Set `SOLVER_WORKERS`
+explicitly to use more cores. Selective runs use `BOUNDS_FLOW=1`,
+`BOUNDS_EXACT=1` or `BOUNDS_LP=1`; their respective `*_SECONDS` variables
+set budgets. `BOUNDS_ROUNDS` and `BOUNDS_SECONDS` limit propagation.
 
-The solvers run at the lowest priority (`nice -n 19`) on half the cores,
-`SOLVER_WORKERS` to change it, so they yield to everything else on the
-machine. A solver that runs past its time and ten minutes is stopped, and
-without a network uv runs them on what it has cached. `BOUNDS_FLOW=0`,
-`BOUNDS_EXACT=0` and `BOUNDS_LP=0` skip a step: the bounds are then only
-looser.
+Results and exact proof snapshots are cached. Incomplete exact transactions
+remain eligible for retry. This upgrade invalidates the old LP cache and
+exact completion markers; proven exact and flow bounds are retained. Run
+advanced inference after upgrading to rebuild LP bounds and proof snapshots.
+SQLite takes an atomic derive lock beside the index and releases it on exit
+or process death. A concurrent derive skips its turn.
+
+The homepage uses the existing stats and feed endpoints and refreshes the
+feed once a minute. Handle evidence and transaction operations are fetched
+only on expansion, via `?details=1`. Deploy the API update before the Pages
+update for these lightweight default responses.
 
 ```sh
 pnpm install && pnpm build
@@ -66,9 +55,7 @@ sudo loginctl enable-linger $USER   # keep them running without a login session
 journalctl --user -u zama-graph-serve -f
 ```
 
-A derive takes a lock next to the database, so one started by hand (`pnpm
-dev derive`) and the sync's never both rewrite the derived tables: the
-later one skips its turn. The sync retries a job that fails (an RPC down,
+The sync retries a job that fails (an RPC down,
 a tunnel not up yet after a reboot) every minute, instead of leaving it
 dead inside a process the derive loop keeps alive, where systemd would not
 restart it.

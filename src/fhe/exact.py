@@ -27,6 +27,7 @@ import json
 import os
 import sys
 import time
+from multiprocessing import active_children
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 
 import z3
@@ -201,6 +202,8 @@ def box(var, constraints, targets, ms, known=None, budget=float('inf')):
     stays where it was, and so does every end left when `budget` seconds
     are up. Returns [lo, hi] for every target it settled.
     """
+    if budget <= 0:
+        return {}
     deadline = time.time() + budget
     known = known or {}
     # pure bit-vector problems: the specialised solver is about 3 times
@@ -262,7 +265,8 @@ def solve_tx(job):
     var, constraints = build(handles, ops)
     targets = [str(t) for t in job['targets']]
     known = {t: [handles[t]['lo'], handles[t]['hi']] for t in targets}
-    return job['tx'], box(var, constraints, targets, ms, known, job['budget'])
+    bounds = box(var, constraints, targets, ms, known, job['budget'])
+    return job['tx'], bounds, len(bounds) == len(targets)
 
 
 def batch(data):
@@ -277,7 +281,7 @@ def batch(data):
 
     # the slow ones first, so that the quick ones fill the end of the run
     jobs = iter(sorted(data['batch'], key=cost, reverse=True))
-    workers = int(os.environ.get('SOLVER_WORKERS') or max(1, (os.cpu_count() or 2) // 2))
+    workers = int(os.environ.get('SOLVER_WORKERS') or 1)
     pool = ProcessPoolExecutor(workers)
     pending = set()
     try:
@@ -291,17 +295,20 @@ def batch(data):
             )
             for f in done:
                 try:
-                    tx, bounds = f.result()
-                    print(json.dumps({'tx': tx, 'bounds': bounds}), flush=True)
+                    tx, bounds, complete = f.result()
+                    print(json.dumps({'tx': tx, 'bounds': bounds, 'complete': complete}), flush=True)
                 except Exception as e:  # a transaction the solver cannot take
                     print(f'failed {type(e).__name__}: {e}'.replace('\n', ' '), file=sys.stderr)
                 nxt = next(jobs, None)
                 if nxt is not None:
                     pending.add(pool.submit(solve_tx, {**nxt, 'ms': ms, 'budget': budget}))
     finally:
+        children = active_children()
         pool.shutdown(wait=False, cancel_futures=True)
-        if hasattr(pool, 'kill_workers'):
-            pool.kill_workers()
+        for child in children:
+            if child.is_alive():
+                child.terminate()
+            child.join()
 
 
 def main():

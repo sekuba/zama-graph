@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { all, type Db, getSync, setSync, transaction } from '../db'
+import { all, type Db, getSync, one, setSync, transaction } from '../db'
 import { memberPools, type Pools } from '../graph/hubs'
 import { log } from '../log'
 import { Op } from '../protocol'
@@ -13,7 +13,7 @@ import {
   Step,
   type Why,
 } from './bounds'
-import { solveExact, txModels } from './exact'
+import { type ExactResult, solveExact, txModels } from './exact'
 import { type Cut, type FlowBound, networks, solveFlows } from './flow'
 import { type LpResult, lpModel, solveLp } from './lp'
 
@@ -188,7 +188,7 @@ export function deriveBounds(db: Db): DeriveStats {
 
   const dispatched = batchTotals(db, xfers, ops, producer)
   // to a fixpoint, each pass within its time
-  const rounds = Number(process.env.BOUNDS_ROUNDS ?? 1_000_000)
+  const rounds = Number(process.env.BOUNDS_ROUNDS ?? 40)
   const ms = Number(process.env.BOUNDS_SECONDS ?? 60) * 1000
   const first = propagate(ops, types, facts, rounds, dispatched, ms)
   const caps = supplyCaps(xfers, first)
@@ -224,7 +224,7 @@ export function deriveBounds(db: Db): DeriveStats {
   // (still true, the history they saw is final) and what is not solved yet
   const proven = flowCache(db)
   let found: FlowBound[] = []
-  if (process.env.BOUNDS_FLOW !== '0') {
+  if (process.env.BOUNDS_FLOW === '1') {
     const started = Date.now()
     // an arc solved once keeps what it proved then, while its neighbours'
     // bounds narrow: once a day every arc is solved again from today's
@@ -233,7 +233,7 @@ export function deriveBounds(db: Db): DeriveStats {
     const fresh =
       !!process.env.FLOW_FRESH || Date.now() - lastFresh > FLOW_FRESH_EVERY_MS
     const seconds = fresh
-      ? Number(process.env.FLOW_FRESH_SECONDS ?? 1800)
+      ? Number(process.env.FLOW_FRESH_SECONDS ?? 300)
       : Number(process.env.FLOW_SECONDS ?? 120)
     const solved = new Set(fresh ? [] : proven.map((f) => f.handle))
     found = solveFlows(networks(xfers, result.lo, result.hi, solved), seconds)
@@ -255,7 +255,7 @@ export function deriveBounds(db: Db): DeriveStats {
   // each transaction solved exactly: the new ones, and those whose values
   // narrowed since, from where everything else leaves them
   const fresh: FlowBound[] = []
-  if (process.env.BOUNDS_EXACT !== '0') {
+  if (process.env.BOUNDS_EXACT === '1') {
     const started = Date.now()
     const seconds = Number(process.env.EXACT_SECONDS ?? 180)
     const opsOf = new Map<number, number[]>()
@@ -287,7 +287,7 @@ export function deriveBounds(db: Db): DeriveStats {
     const todo = [...unsolved, ...moved]
     // in chunks while time is left; what a chunk leaves (the time ran out,
     // the solver failed) stays unsolved for the next run
-    const solved = new Map<number, FlowBound[]>()
+    const solved = new Map<number, ExactResult>()
     for (let at = 0; at < todo.length; at += EXACT_CHUNK) {
       const left = seconds - (Date.now() - started) / 1000
       if (left < 5) break
@@ -306,17 +306,18 @@ export function deriveBounds(db: Db): DeriveStats {
       // narrowed by what it just found
       const sigs = new Map<number, string>()
       for (const [tx, list] of got) {
-        const own = new Map(list.map((f) => [f.handle, f]))
-        sigs.set(tx, startOf(handlesOf(tx), result.lo, result.hi, own))
+        const own = new Map(list.bounds.map((f) => [f.handle, f]))
+        if (list.complete)
+          sigs.set(tx, startOf(handlesOf(tx), result.lo, result.hi, own))
       }
       saveExact(db, got, sigs)
     }
-    for (const list of solved.values()) fresh.push(...list)
+    for (const list of solved.values()) fresh.push(...list.bounds)
     log('exact', {
-      solved: solved.size,
+      solved: [...solved.values()].filter((r) => r.complete).length,
       tightened: fresh.length,
       again: moved.length,
-      left: todo.length - solved.size,
+      left: todo.length - [...solved.values()].filter((r) => r.complete).length,
       ms: Date.now() - started,
     })
   }
@@ -333,7 +334,7 @@ export function deriveBounds(db: Db): DeriveStats {
   // never solved first (newest first), then those solved longest ago,
   // within the time
   let lps = 0
-  if (process.env.BOUNDS_LP !== '0') {
+  if (process.env.BOUNDS_LP === '1') {
     const started = Date.now()
     const done = lpCache(db).done
     const position = new Map(xfers.map((x, i) => [x.amount, i]))
@@ -440,8 +441,8 @@ const FLOW_VERSION = '2'
 /** Transactions given to the exact solver at once */
 const EXACT_CHUNK = 2000
 
-/** Bump when the exact model changes: earlier results are then dropped */
-const EXACT_VERSION = '1'
+/** Completion semantics changed; retain proven bounds but retry old transactions. */
+const EXACT_VERSION = '2'
 
 /** The transactions earlier exact runs solved, and the bounds they proved */
 function exactCache(db: Db): {
@@ -450,7 +451,7 @@ function exactCache(db: Db): {
   bounds: FlowBound[]
 } {
   if (getSync(db, 'exact_version') !== EXACT_VERSION) {
-    db.exec('delete from exact_tx; delete from exact_bound')
+    db.exec('delete from exact_tx')
     setSync(db, 'exact_version', EXACT_VERSION)
   }
   return {
@@ -489,9 +490,9 @@ export function startOf(
   return hash.digest('base64')
 }
 
-function saveExact(
+export function saveExact(
   db: Db,
-  solved: Map<number, FlowBound[]>,
+  solved: Map<number, ExactResult>,
   sigs: Map<number, string>,
 ): void {
   transaction(db, () => {
@@ -503,18 +504,26 @@ function saveExact(
     const bound = db.prepare(
       `insert into exact_bound (handle, lo, hi) values (?1, ?2, ?3)
        on conflict (handle) do update set
-         lo = case when cast(?2 as integer) > cast(lo as integer) then ?2 else lo end,
-         hi = case when cast(?3 as integer) < cast(hi as integer) then ?3 else hi end`,
+         lo = ?2, hi = ?3`,
     )
     for (const [t, list] of solved) {
-      tx.run(t, sigs.get(t) ?? null)
-      for (const f of list) bound.run(f.handle, String(f.lo), String(f.hi))
+      tx.run(t, list.complete ? (sigs.get(t) ?? null) : null)
+      for (const f of list.bounds) {
+        const prior = one<{ lo: string; hi: string }>(
+          db,
+          'select lo, hi from exact_bound where handle = ?',
+          f.handle,
+        )
+        const lo = prior && BigInt(prior.lo) > f.lo ? prior.lo : String(f.lo)
+        const hi = prior && BigInt(prior.hi) < f.hi ? prior.hi : String(f.hi)
+        bound.run(f.handle, lo, hi)
+      }
     }
   })
 }
 
 /** Bump when the linear model changes: earlier results are then dropped */
-const LP_VERSION = '1'
+const LP_VERSION = '2'
 
 /**
  * What earlier runs of the linked transactions proved, and when each target

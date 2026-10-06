@@ -86,6 +86,8 @@ export interface Status {
 
 /** The scoreboard: what the public data reveals, over all tokens */
 export interface Stats {
+  /** One finalized, proven link, cached during derivation for the homepage. */
+  example?: LiveEvent
   accounts: number
   transfers: {
     total: number
@@ -498,6 +500,7 @@ export interface WhyStep {
     moreMinus: { count: number; total: string }
     /** all plus terms minus all minus terms: the bound */
     total: string
+    rounding?: 'up' | 'down'
   }
 }
 
@@ -507,6 +510,8 @@ export interface WhyChain {
 }
 
 export interface WhyTerm {
+  value?: string
+  weight?: string
   handle: string
   amount: Amount
   role: string | null

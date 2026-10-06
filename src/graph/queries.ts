@@ -1,5 +1,6 @@
 import { all, type Db, getSync, handleHex, handleId, one } from '../db'
 import type { JsonRpc } from '../eth/rpc'
+import { validCut } from '../fhe/certificate'
 import type { StoredWhy } from '../fhe/derive'
 import type { Cut } from '../fhe/flow'
 import {
@@ -392,23 +393,25 @@ function flowCutOf(
   )
   if (!row?.cut) return undefined
   const cut = JSON.parse(row.cut) as Cut
+  if (!validCut(cut, row.bound)) return undefined
   const ids = [...cut.plus, ...cut.minus].filter((h) => h >= 0)
   const known = amounts(db, ids)
-  const terms = (list: number[]) =>
-    list
-      .filter((h) => h >= 0)
-      .map((h) => ({
-        handle: handleHex(db, [h]).get(h) ?? '',
-        amount: known.get(h) ?? { lo: '0' },
-        role: roleOf(db, h),
-      }))
+  const terms = (list: number[], values?: string[], weights?: string[]) =>
+    list.map((h, i) => ({
+      value: values?.[i],
+      weight: weights?.[i],
+      handle: handleHex(db, [h]).get(h) ?? '',
+      amount: known.get(h) ?? { lo: '0' },
+      role: h >= 0 ? roleOf(db, h) : null,
+    }))
   return {
     view: {
-      plus: terms(cut.plus),
-      minus: terms(cut.minus),
+      plus: terms(cut.plus, cut.plusValues, cut.plusWeights),
+      minus: terms(cut.minus, cut.minusValues, cut.minusWeights),
       morePlus: cut.morePlus,
       moreMinus: cut.moreMinus,
       total: row.bound,
+      rounding: cut.rounding,
     },
     next: cut.plus.find((h) => h >= 0),
   }
@@ -1168,7 +1171,11 @@ function opNodes(db: Db, rows: OpRow[]): OpNode[] {
  * it, and every public trace of it: its clear values, whether anyone may
  * decrypt it, and who asked the KMS for it on the Gateway.
  */
-export function handleDetail(db: Db, hex: string): HandleDetail | undefined {
+export function handleDetail(
+  db: Db,
+  hex: string,
+  details = true,
+): HandleDetail | undefined {
   const id = handleId(db, hex)
   if (id === undefined) return undefined
   const h = hex.replace(/^0x/, '').toLowerCase()
@@ -1176,7 +1183,7 @@ export function handleDetail(db: Db, hex: string): HandleDetail | undefined {
   const expression: OpRow[] = []
   const seen = new Set<number>()
   const queue: [number, number][] = [[id, 0]]
-  while (queue.length > 0 && expression.length < 40) {
+  while (queue.length > 0 && expression.length < (details ? 40 : 1)) {
     const [x, depth] = queue.shift() as [number, number]
     if (seen.has(x)) continue
     seen.add(x)
@@ -1188,11 +1195,13 @@ export function handleDetail(db: Db, hex: string): HandleDetail | undefined {
       if (arg !== null) queue.push([arg, depth + 1])
     }
   }
-  const usedBy = all<OpRow>(
-    db,
-    `${OP_SELECT} where o.a = ?1 or o.b = ?1 or o.c = ?1 order by o.block, o.log limit 20`,
-    id,
-  )
+  const usedBy = details
+    ? all<OpRow>(
+        db,
+        `${OP_SELECT} where o.a = ?1 or o.b = ?1 or o.c = ?1 order by o.block, o.log limit 20`,
+        id,
+      )
+    : []
   const clear = all<{
     source: ClearSource
     value: string
@@ -1227,35 +1236,37 @@ export function handleDetail(db: Db, hex: string): HandleDetail | undefined {
     'select i.user, i.caller, t.hash, t.time from input i join txn t on t.id = i.tx where i.handle = ?',
     id,
   )
-  const gateway = all<{
-    id: string
-    kind: number
-    user: string | null
-    time: number
-    tx: string
-  }>(
-    db,
-    `select r.id, r.kind, r.user, r.time, r.tx from gw_handle g join gw_request r on r.id = g.request
+  const gateway = details
+    ? all<{
+        id: string
+        kind: number
+        user: string | null
+        time: number
+        tx: string
+      }>(
+        db,
+        `select r.id, r.kind, r.user, r.time, r.tx from gw_handle g join gw_request r on r.id = g.request
      where g.handle = ? order by r.block limit 50`,
-    id,
-  )
+        id,
+      )
+    : []
   const type = Number.parseInt(h.slice(60, 62), 16)
-  const stories = laterStories(db, id)
+  const stories = details ? laterStories(db, id) : []
   return {
     handle: h,
     type: TYPE_NAMES[type] ?? `type ${type}`,
     chainId: Number(BigInt(`0x${h.slice(44, 60)}`)),
     computed: h.slice(42, 44) === 'ff',
     amount: amounts(db, [id]).get(id) ?? { lo: '0' },
-    why: whyChains(db, id, stories),
-    same: branchOf(db, id) ?? null,
+    why: details ? whyChains(db, id, stories) : [],
+    same: details ? (branchOf(db, id) ?? null) : null,
     stories,
     clear,
     expression: opNodes(db, expression),
     usedBy: opNodes(db, usedBy),
     role: roleOf(db, id),
     about: aboutOf(db, id),
-    sends: input ? inputSends(db, id) : [],
+    sends: details && input ? inputSends(db, id) : [],
     decryptable: dec
       ? { caller: dec.caller, time: dec.time, tx: dec.hash }
       : null,
@@ -1277,7 +1288,11 @@ export function handleDetail(db: Db, hex: string): HandleDetail | undefined {
   }
 }
 
-export function txDetail(db: Db, hash: string): TxDetail | undefined {
+export function txDetail(
+  db: Db,
+  hash: string,
+  details = true,
+): TxDetail | undefined {
   const h = hash.replace(/^0x/, '').toLowerCase()
   const t = one<{
     id: number
@@ -1307,11 +1322,13 @@ export function txDetail(db: Db, hash: string): TxDetail | undefined {
     db,
     xs.map((x) => x.amount),
   )
-  const ops = all<OpRow>(
-    db,
-    `${OP_SELECT} where o.tx = ? order by o.block, o.log limit 400`,
-    t.id,
-  )
+  const ops = details
+    ? all<OpRow>(
+        db,
+        `${OP_SELECT} where o.tx = ? order by o.block, o.log limit 400`,
+        t.id,
+      )
+    : []
   const unwraps = all<{ handle: number }>(
     db,
     'select handle from unwrap where tx = ?1 or fin_tx = ?1 order by block, log limit 5',
@@ -1331,7 +1348,7 @@ export function txDetail(db: Db, hash: string): TxDetail | undefined {
       to: x.dst,
       amount: amt.get(x.amount) ?? { lo: '0' },
       handle: hex.get(x.amount) ?? '',
-      revealed: revealedLater(db, x.amount, amt.get(x.amount)),
+      revealed: details ? revealedLater(db, x.amount, amt.get(x.amount)) : null,
     })),
     ops: opNodes(db, ops),
     unwraps: [
@@ -1347,7 +1364,7 @@ export function txDetail(db: Db, hash: string): TxDetail | undefined {
       t.id,
       () => 'path',
     ),
-    sums: balanceSums(db, t.block, xs, sym, amt),
+    sums: details ? balanceSums(db, t.block, xs, sym, amt) : [],
   }
 }
 

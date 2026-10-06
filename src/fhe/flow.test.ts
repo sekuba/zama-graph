@@ -97,6 +97,8 @@ describe('flow solver', function () {
     // pinned by what both held after wrapping: all there is between them
     expect(alice?.hiCut).toEqual({
       plus: [5, 6],
+      plusValues: ['100', '50'],
+      minusValues: [],
       morePlus: { count: 0, total: '0' },
       minus: [],
       moreMinus: { count: 0, total: '0' },
