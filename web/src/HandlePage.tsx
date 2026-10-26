@@ -101,6 +101,35 @@ function HandleEvidence({ handle }: { handle: string }) {
   )
 }
 
+/**
+ * Who a contract let use the value (ACL Allowed): an account that signs can
+ * ask the KMS to decrypt it, a contract only computes with it
+ */
+function Allowed({ d }: { d: HandleDetail }) {
+  const readers = d.allowed.filter((a) => !a.contract)
+  const contracts = d.allowed.filter((a) => a.contract)
+  const list = (rows: HandleDetail['allowed']) =>
+    rows.map((a) => (
+      <span
+        key={a.account}
+        className="mr-2"
+        title={`allowed by ${a.caller} in transaction ${a.tx}`}
+      >
+        <Address address={a.account} />
+      </span>
+    ))
+  return (
+    <>
+      {readers.length > 0 && (
+        <div>can decrypt it, allowed by a contract: {list(readers)}</div>
+      )}
+      {contracts.length > 0 && (
+        <div>can compute with it: {list(contracts)}</div>
+      )}
+    </>
+  )
+}
+
 export function HandlePage({ handle }: { handle: string }) {
   const { data: d, error } = useApi(api.handle, handle)
   if (!d) return <Loading error={error} />
@@ -155,6 +184,7 @@ export function HandlePage({ handle }: { handle: string }) {
               <Tx hash={d.decryptable.tx} />
             </div>
           )}
+          <Allowed d={d} />
         </div>
       </section>
       <Section collapsed title="Why this amount · evidence">

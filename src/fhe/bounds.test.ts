@@ -202,6 +202,36 @@ describe('propagate', () => {
     expect(r.contradictions).toEqual(0)
   })
 
+  it('adds the operands of an xor that merges values at most one of which is nonzero', () => {
+    // the swap's analytics: a period's volume is the sum of every
+    // settlement's `in xor out`, one side of each always zero
+    const d = new Dag()
+    const in1 = d.input()
+    const out1 = d.input()
+    const in2 = d.input()
+    const out2 = d.input()
+    const t1 = d.bin(Op.Xor, in1, out1)
+    const t2 = d.bin(Op.Xor, in2, out2)
+    const plain = d.bin(Op.Xor, d.input(), d.input())
+    for (const o of d.ops) if (o.kind === Op.Xor && o.r !== plain) o.sum = true
+    const total = d.bin(Op.Add, t1, t2)
+    d.facts.push({ handle: total, lo: 700n, hi: 700n })
+    d.facts.push({ handle: in2, lo: 0n, hi: 200n })
+    d.facts.push({ handle: out2, lo: 0n, hi: 0n })
+    d.facts.push({ handle: out1, lo: 0n, hi: 0n })
+    for (const h of [in1, out1, in2, out2]) {
+      if (!d.facts.some((f) => f.handle === h))
+        d.facts.push({ handle: h, lo: 0n, hi: 1000n })
+    }
+    const r = d.run()
+    // the first settlement is at least the total less what the second can be
+    expect([r.lo[t1], r.hi[t1]]).toEqual([500n, 700n])
+    expect([r.lo[in1], r.hi[in1]]).toEqual([500n, 700n])
+    // an ordinary xor of two unknowns says nothing of its sum
+    expect(r.lo[plain]).toEqual(0n)
+    expect(r.contradictions).toEqual(0)
+  })
+
   it('does not propagate through an add that can wrap', () => {
     const d = new Dag()
     const a = d.input()

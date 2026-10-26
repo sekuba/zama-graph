@@ -1,6 +1,7 @@
 import { DatabaseSync } from 'node:sqlite'
 import { expect } from 'earl'
 import { type Ev, type Ledger, ZERO } from './model'
+import { type End, escrowReturns, type Intent } from './swaps'
 import { LINKS, traceUnwrap } from './traces'
 
 const T = '0x00000000000000000000000000000000000000c0'
@@ -174,6 +175,53 @@ describe('traceUnwrap', () => {
     expect(stop.origin).toEqual('hub')
   })
 
+  it('follows a swap reclaim back to the maker’s own lock', () => {
+    // A locks the 100 it wrapped into the escrow H, B locks up to 500 into
+    // the same escrow; A's intent is reclaimed: H returns A at most its lock
+    const l = ledger(
+      [
+        { src: ZERO, dst: A, lo: 100n, hi: 100n, dstAfter: [100n, 100n] },
+        { src: ZERO, dst: B, lo: 500n, hi: 500n, dstAfter: [500n, 500n] },
+        { src: B, dst: H, lo: 0n, hi: 500n, srcAfter: [0n, 500n] },
+        { src: A, dst: H, lo: 100n, hi: 100n, srcAfter: [0n, 0n] },
+        { src: H, dst: A, lo: 0n, hi: 100n, dstAfter: [0n, 100n] },
+        { src: A, dst: ZERO, lo: 100n, hi: 100n, srcAfter: [0n, 0n] },
+      ],
+      [H],
+    )
+    const returns = escrowReturns(l, [
+      intent(A, 3, [end('reclaimed', 4)]),
+      intent(B, 2, []),
+    ])
+    expect(returns.get(4)?.legs).toEqual([3])
+    const t = traceUnwrap(l, 5, (a) => (a === H ? 'member' : 'enter'), returns)
+    expect(t.shares.map((s) => [s.depositor, s.min])).toEqual([[A, 100n]])
+  })
+
+  it('follows swap proceeds to the market maker’s payment in the same transaction', () => {
+    // A locks 100 into H; the market maker C settles: it pays H 50, H pays
+    // C A's lock and A the 50 less the fee, all in one transaction
+    const l = ledger(
+      [
+        { src: ZERO, dst: A, lo: 100n, hi: 100n, dstAfter: [100n, 100n] },
+        { src: ZERO, dst: C, lo: 50n, hi: 50n, dstAfter: [50n, 50n] },
+        { src: A, dst: H, lo: 100n, hi: 100n, srcAfter: [0n, 0n] },
+        { src: C, dst: H, lo: 0n, hi: 50n, srcAfter: [0n, 50n] },
+        { src: H, dst: C, lo: 0n, hi: 100n, dstAfter: [0n, 100n] },
+        { src: H, dst: A, lo: 49n, hi: 49n, dstAfter: [49n, 49n] },
+        { src: A, dst: ZERO, lo: 49n, hi: 49n, srcAfter: [0n, 0n] },
+      ],
+      [H],
+    )
+    for (const i of [3, 4, 5]) (l.events[i] as Ev).tx = 100
+    const settled = { ...intent(A, 2, [end('settled', 100)]), taker: C }
+    const returns = escrowReturns(l, [settled])
+    expect(returns.get(4)?.legs).toEqual([2])
+    expect(returns.get(5)?.legs).toEqual([3])
+    const t = traceUnwrap(l, 6, (a) => (a === H ? 'member' : 'enter'), returns)
+    expect(t.shares.map((s) => [s.depositor, s.min])).toEqual([[C, 49n]])
+  })
+
   it('follows a batch claim back to the join it converts', () => {
     // A wraps 100 of token U and joins a batch with it; B joins with up to
     // 500. The batch claims A 99 of T at rate 0.99, which A unwraps
@@ -274,3 +322,26 @@ describe('LINKS', () => {
     expect(kind(LINKS.several)).toEqual([5, 6])
   })
 })
+
+/** A swap intent that locked into the escrow H in transaction `tx` */
+function intent(maker: string, tx: number, ends: End[]): Intent {
+  return {
+    swap: '0x0000000000000000000000000000000000000055',
+    version: 2,
+    id: String(tx),
+    maker,
+    time: 0,
+    tx,
+    candidates: [],
+    restricted: [],
+    quoters: [],
+    escrow: H,
+    ends,
+    named: [],
+    fields: [],
+  }
+}
+
+function end(kind: End['kind'], tx: number): End {
+  return { kind, tx, time: 0, succeed: '', paid: [], got: [] }
+}

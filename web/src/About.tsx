@@ -62,6 +62,17 @@ export function About({ status }: { status: Status | undefined }) {
             transfers that pin it, checked to add up.
           </li>
           <li>
+            Swaps: an intent hides its real order among decoys, and only the
+            real order&rsquo;s legs move anything. Once a settlement or reclaim
+            provably moved funds (a public success flag, or a leg proven
+            positive), every candidate with a leg provably zero is a decoy; one
+            left is the real order; with both of its legs exact, its price is
+            public too. A revealed volume is walked back through its additions
+            to the settlements it sums. The swap merges per-asset amounts with
+            xor, at most one of them nonzero, so each such xor is a sum: the
+            volume becomes one equation over its settlements.
+          </li>
+          <li>
             Sound: a known exact amount is the only one the data allows.{' '}
             {b &&
               `${b.ops.toLocaleString('en-US')} operations, ${b.contradictions} contradictions.`}{' '}
@@ -79,7 +90,10 @@ export function About({ status }: { status: Status | undefined }) {
           <li>Provably zero transfers and empty balances cut the walk.</li>
           <li>
             Pools are not walked, except auction wallets and vault batchers,
-            which only return a member its own funds.
+            which only return a member its own funds. The swap&rsquo;s shared
+            escrows are followed only through what each intent ties a payout to:
+            a reclaim to the maker&rsquo;s own lock, a settlement to the other
+            side&rsquo;s payment.
           </li>
           <li>
             A depositor's share is at least what all other sources could not
@@ -91,7 +105,9 @@ export function About({ status }: { status: Status | undefined }) {
         <Points>
           <li>
             Ethereum: registry wrappers, ERC-20 deposits, executor operations,
-            ACL grants and delegations.
+            ACL grants (who a contract let use or decrypt each amount) and
+            delegations; vault batches, the ZAMA auction, and the swap&rsquo;s
+            intents, quotes, settlements and volume reveals.
           </li>
           <li>
             Zama Gateway (chain 261131): public decryptions with KMS signatures
@@ -105,7 +121,10 @@ export function About({ status }: { status: Status | undefined }) {
             Intervals forget how amounts relate: through circular flows, bounds
             are sound but loose.
           </li>
-          <li>No guesses, no identities beyond public labels and ENS names.</li>
+          <li>
+            No guesses, no identities beyond public labels and ENS names, and
+            one label inferred from the data, marked as such: Merkl.
+          </li>
           <li>The KMS operators can read everything; nothing here shows it.</li>
           <li>
             <a href={REPO} className="underline">

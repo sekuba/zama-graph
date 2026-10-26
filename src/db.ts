@@ -154,6 +154,19 @@ const SCHEMA = `
     done integer not null default 0
   );
 
+  -- ACL Allowed: who else a contract let use a handle, an account other
+  -- than the contract itself. An account that can sign may then decrypt it.
+  create table if not exists allowed (
+    handle integer not null,
+    account text not null,
+    caller text not null,         -- the contract that allowed it
+    block integer not null,
+    tx integer not null,
+    time integer not null,
+    primary key (handle, account)
+  ) without rowid;
+  create index if not exists allowed_account on allowed(account);
+
   -- ACL AllowedForDecryption: handles anyone may ask the KMS to decrypt
   create table if not exists decryptable (
     handle integer primary key,

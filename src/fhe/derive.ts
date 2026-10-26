@@ -1,8 +1,8 @@
 import { createHash } from 'node:crypto'
 import { all, type Db, getSync, one, setSync, transaction } from '../db'
-import { memberPools, type Pools } from '../graph/hubs'
+import { memberPools, type Pools, SWAP_CREATED } from '../graph/hubs'
 import { log } from '../log'
-import { Op } from '../protocol'
+import { FheType, Op } from '../protocol'
 import {
   type DagOp,
   type Fact,
@@ -121,6 +121,31 @@ export function deriveBounds(db: Db): DeriveStats {
   )) {
     types[h.id] = Number.parseInt(h.t, 16)
   }
+
+  // Both ConfidentialSwap versions merge per-asset amounts with xor, of
+  // which at most one is nonzero: the real order's asset, or one side of
+  // the analytics' `in xor out` (every 64-bit xor of the implementations
+  // 0xf675538991bc8dacd4cea94eff33e38a164ddf10 and, first version,
+  // 0xd7b3bd880cdc15a5ea15921ae5104b33ee5ae69b). Such an xor is a sum,
+  // which ties a revealed volume to the settlements it adds up. Check
+  // again when either swap is upgraded.
+  const swaps = new Set(
+    all<{ address: string }>(
+      db,
+      'select distinct address from hub_log where topic0 in (?, ?)',
+      ...SWAP_CREATED,
+    ).map((r) => r.address),
+  )
+  rows.forEach((o, i) => {
+    const op = ops[i]
+    if (
+      op &&
+      o.kind === Op.Xor &&
+      swaps.has(o.caller) &&
+      types[o.r] === FheType.Uint64
+    )
+      op.sum = true
+  })
 
   // the balance handles of each transfer, from the operations alone
   const producer = new Int32Array(maxId + 1).fill(-1)
@@ -523,7 +548,7 @@ export function saveExact(
 }
 
 /** Bump when the linear model changes: earlier results are then dropped */
-const LP_VERSION = '2'
+const LP_VERSION = '3'
 
 /**
  * What earlier runs of the linked transactions proved, and when each target

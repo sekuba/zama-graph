@@ -46,6 +46,11 @@ const HUB_TOPICS = [
   TOPICS.IntentQuoted,
   TOPICS.IntentResolved,
   TOPICS.AnalyticsRevealed,
+  TOPICS.IntentCreatedV1,
+  TOPICS.IntentSettledV1,
+  TOPICS.IntentReclaimedV1,
+  TOPICS.IntentQuotedV1,
+  TOPICS.IntentResolvedV1,
 ]
 
 /**
@@ -55,9 +60,10 @@ const HUB_TOPICS = [
  * - the registry, which lists the wrappers;
  * - every event of every wrapper, both event eras, and the ERC-20 transfers
  *   into the wrappers that name who paid for each wrap;
- * - the FHE operations, ACL decryption grants and pooling events of the
- *   wrappers and of every contract that holds or moves their tokens. A
- *   contract seen for the first time is backfilled from that block.
+ * - the FHE operations, ACL grants (who else may use or decrypt a handle,
+ *   and what anyone may decrypt) and pooling events of the wrappers and of
+ *   every contract that holds or moves their tokens. A contract seen for
+ *   the first time is backfilled from that block.
  * - every user-decryption delegation on the ACL.
  */
 export async function syncEthereum(
@@ -67,6 +73,7 @@ export async function syncEthereum(
 ): Promise<void> {
   await rediscover(db, rpc)
   await refetchHubLogs(db, rpc)
+  await refetchAllowed(db, rpc)
   for (;;) {
     const done = Number(getSync(db, 'eth_block') ?? HOST_FROM_BLOCK - 1)
     const head = (await rpc.getBlockNumber()) - CONFIRMATIONS
@@ -131,7 +138,7 @@ async function rediscover(db: Db, rpc: JsonRpc): Promise<void> {
  * Bumped when HUB_TOPICS changes: the pooling events of every caller are
  * fetched again over the indexed history (existing rows are kept)
  */
-const HUB_TOPICS_VERSION = '3'
+const HUB_TOPICS_VERSION = '4'
 
 async function refetchHubLogs(db: Db, rpc: JsonRpc): Promise<void> {
   const done = Number(getSync(db, 'eth_block') ?? 0)
@@ -155,6 +162,40 @@ async function refetchHubLogs(db: Db, rpc: JsonRpc): Promise<void> {
   }
   setSync(db, 'hub_topics', HUB_TOPICS_VERSION)
   log('hub events fetched again', { callers: callers.length })
+}
+
+/**
+ * Bumped when the ACL grants kept per caller change: they are fetched
+ * again over the indexed history, a window of blocks at a time (the
+ * wrappers alone allow a few handles per transfer)
+ */
+const ACL_GRANTS_VERSION = '1'
+
+async function refetchAllowed(db: Db, rpc: JsonRpc): Promise<void> {
+  const done = Number(getSync(db, 'eth_block') ?? 0)
+  if (!done || getSync(db, 'acl_grants') === ACL_GRANTS_VERSION) {
+    setSync(db, 'acl_grants', ACL_GRANTS_VERSION)
+    return
+  }
+  const ids = new Ids(db)
+  const callers = all<{ address: string }>(
+    db,
+    'select address from caller where done = 1',
+  ).map((c) => c.address)
+  for (let i = 0; i < callers.length; i += 40) {
+    const padded = callers.slice(i, i + 40).map(padAddress)
+    for (let from = HOST_FROM_BLOCK; from <= done; from += CHUNK * 10) {
+      const logs = await rpc.getLogs({
+        address: HOST.acl,
+        topics: [TOPICS.Allowed, padded],
+        fromBlock: from,
+        toBlock: Math.min(from + CHUNK * 10 - 1, done),
+      })
+      transaction(db, () => insertGrants(db, ids, logs))
+    }
+  }
+  setSync(db, 'acl_grants', ACL_GRANTS_VERSION)
+  log('ACL grants fetched again', { callers: callers.length })
 }
 
 async function indexRange(
@@ -633,7 +674,7 @@ async function indexCallers(
       }),
       rpc.getLogs({
         address: HOST.acl,
-        topics: [TOPICS.AllowedForDecryption, padded],
+        topics: [[TOPICS.AllowedForDecryption, TOPICS.Allowed], padded],
         fromBlock: from,
         toBlock: to,
       }),
@@ -742,15 +783,30 @@ function insertOps(
   }
 }
 
-/** AllowedForDecryption: the handles become decryptable by anyone */
+/**
+ * ACL grants. AllowedForDecryption: the handles become decryptable by
+ * anyone. Allowed: one more account may use the handle, and decrypt it if
+ * it can sign; a contract allowing itself to keep a handle is left out.
+ */
 function insertGrants(db: Db, ids: Ids, logs: Log[]): void {
   const ins = db.prepare(
     `insert into decryptable (handle, caller, block, tx, time) values (?, ?, ?, ?, ?)
      on conflict do nothing`,
   )
+  const insAllowed = db.prepare(
+    `insert into allowed (handle, account, caller, block, tx, time) values (?, ?, ?, ?, ?, ?)
+     on conflict do nothing`,
+  )
   for (const l of logs) {
     const tx = ids.tx(l.transactionHash, l.blockNumber, l.time)
     const caller = topicAddress(l.topics[1])
+    if (l.topics[0] === TOPICS.Allowed) {
+      const account = topicAddress(l.topics[2])
+      if (account === caller) continue
+      const h = ids.handle(word(l.data, 0))
+      insAllowed.run(h, account, caller, l.blockNumber, tx, l.time)
+      continue
+    }
     for (const h of bytes32Array(l.data, 0)) {
       ins.run(ids.handle(h), caller, l.blockNumber, tx, l.time)
     }

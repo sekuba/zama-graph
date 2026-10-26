@@ -14,7 +14,7 @@ const TOKEN = `0x${'1'.repeat(40)}`
 const topic = (a: string) => `0x${'0'.repeat(24)}${a.slice(2)}`
 
 describe('swap escrows', () => {
-  it('are hubs the walk stops at, however few makers used them', () => {
+  it('are hubs the walk enters only through tied payouts, however few makers used them', () => {
     const db = openDb(':memory:')
     try {
       for (const [address, kind] of [
@@ -68,7 +68,8 @@ describe('swap escrows', () => {
       assert.equal(hubs.get(ESCROW)?.kind, 'swap')
       assert.equal(hubs.get(WALLET), undefined)
       const mode = hubModes(hubs.values(), memberPools(db))
-      assert.equal(mode(ESCROW), 'stop')
+      // a payout no intent ties to its payments is an outside source
+      assert.equal(mode(ESCROW), 'member')
       assert.equal(mode(WALLET), 'enter')
     } finally {
       db.close()

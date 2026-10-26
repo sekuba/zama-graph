@@ -90,7 +90,8 @@ export function lpModel(
   ops.forEach((o, i) => {
     if (!grouped(rows[i]?.tx as number)) return
     model.ops.push({
-      op: OP_NAMES[o.kind] ?? String(o.kind),
+      // a merge of values at most one of which is nonzero is their sum
+      op: o.sum ? 'add' : (OP_NAMES[o.kind] ?? String(o.kind)),
       a: o.a,
       b: o.b,
       c: o.c,

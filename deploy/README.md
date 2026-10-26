@@ -40,6 +40,15 @@ advanced inference after upgrading to rebuild LP bounds and proof snapshots.
 SQLite takes an atomic derive lock beside the index and releases it on exit
 or process death. A concurrent derive skips its turn.
 
+The first sync after the swap update fetches, once, over the whole history,
+the pooling events of every indexed contract again (both versions of
+ConfidentialSwap emit events it did not keep before) and the ACL's
+`Allowed` grants of every indexed contract, a window of blocks at a time.
+The next derive classifies the swap escrows, writes the swap tables and
+the readers the ACL grants show. The swap's xors now count as sums in the
+linked-transaction model, so its cached results are dropped: run advanced
+inference afterwards to rebuild them.
+
 The homepage uses the existing stats and feed endpoints and refreshes the
 feed once a minute. Handle evidence and transaction operations are fetched
 only on expansion, via `?details=1`. Deploy the API update before the Pages

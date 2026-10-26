@@ -1,13 +1,8 @@
 import { type Db, setSync, transaction } from '../db'
 import { log } from '../log'
-import {
-  type Hub,
-  hubModes,
-  memberPools,
-  poolReturns,
-  type Returns,
-} from './hubs'
+import { type Hub, hubModes, memberPools, type Returns } from './hubs'
 import { type Ev, type Ledger, ZERO } from './model'
+import { allReturns } from './swaps'
 import type { TraceSummary } from './types'
 
 /** Address lists in the trace table are comma-separated, including empty strings. */
@@ -460,7 +455,7 @@ export function deriveTraces(
     primary key (tx, handle)
   ) without rowid`)
   const modeOf = hubModes(hubs.values(), memberPools(db))
-  const returns = poolReturns(db, ledger)
+  const returns = allReturns(db, ledger)
   const traces: Trace[] = []
   for (const at of ledger.unwraps.keys()) {
     const e = ledger.events[at] as Ev

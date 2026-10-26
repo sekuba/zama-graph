@@ -167,6 +167,13 @@ export function deriveStats(db: Db): Stats {
     legs: routerTxs.reduce((a, t) => a + t.legs, 0),
     zero: routerTxs.reduce((a, t) => a + t.zero, 0),
   }
+  // finished swap intents with decoys, those whose real order is public,
+  // and those whose price is
+  const swaps = one<{ finished: number; revealed: number; priced: number }>(
+    db,
+    `select count(*) finished, count(proven) revealed, coalesce(sum(priced), 0) priced
+     from swap_intent where outcome <> 'open' and candidates > 1`,
+  )
   const named = new Set(
     all<{ address: string }>(db, NAMED).map((r) => r.address),
   )
@@ -251,6 +258,7 @@ export function deriveStats(db: Db): Stats {
       ),
     },
     router,
+    swaps,
     named: {
       accounts: [...named].filter((a) => accounts.has(a)).length,
       linked: namedLinked,

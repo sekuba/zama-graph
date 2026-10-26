@@ -6,13 +6,16 @@ import type { Cut } from '../fhe/flow'
 import {
   FheType,
   KNOWN,
+  MERKL_DELEGATE,
   OP_NAMES,
   Op,
+  SWAP_COMPLIANCE,
   TOPICS,
   TRUST,
   WILDCARD,
 } from '../protocol'
-import { ROUTER_LEGS, ROUTER_REVEALED } from './hubs'
+import { allowedOf } from './allowed'
+import { ROUTER_LEGS, ROUTER_REVEALED, SWAP_CREATED } from './hubs'
 import { MAX64, NAMED, ZERO } from './model'
 import { storyOf } from './story'
 import { LINKS, SETS, traceSummary } from './traces'
@@ -21,6 +24,7 @@ import type {
   AccountInfo,
   AddressEvent,
   AddressSummary,
+  AllowedReader,
   Amount,
   Because,
   Branch,
@@ -507,6 +511,8 @@ const LIVE_WHERE: Record<LiveFilter, string> = {
   pinned: `x.src <> '${ZERO}' and x.dst <> '${ZERO}'
     and x.amount in (select handle from bound where lo = hi)`,
   router: `${ROUTER_LEGS} and x.tx in (${ROUTER_REVEALED})`,
+  // what the makers of swaps with a public real order sold and got
+  swap: 'x.amount in (select handle from swap_real)',
   unwraps: `x.dst = '${ZERO}'`,
   named: `(x.src in (${NAMED}) or x.dst in (${NAMED}))`,
 }
@@ -1249,6 +1255,7 @@ export function handleDetail(
     decryptable: dec
       ? { caller: dec.caller, time: dec.time, tx: dec.hash }
       : null,
+    allowed: allowedOf(db, id),
     input: input
       ? {
           user: input.user,
@@ -1654,8 +1661,9 @@ export function labels(
   for (const t of all<{ taker: string; n: number }>(
     db,
     `select '0x' || substr(topics, 161, 40) taker, count(*) n from hub_log
-     where topic0 = ? group by taker having n >= 3`,
+     where topic0 in (?, ?) group by taker having n >= 3`,
     TOPICS.IntentSettled,
+    TOPICS.IntentSettledV1,
   )) {
     out[t.taker] = {
       label: `swap market maker (${t.n} settlements)`,
@@ -1663,7 +1671,7 @@ export function labels(
     }
   }
   for (const [address, k] of Object.entries(KNOWN)) {
-    out[address] = { ...out[address], label: k.label, zama: true }
+    out[address] = { ...out[address], label: k.label, zama: !k.outside }
   }
   return out
 }
@@ -1803,6 +1811,49 @@ export function readers(db: Db): ReadersSummary {
     `select user, count(*) requests, sum(handles) handles, count(distinct key) keys, max(time) last
      from gw_request where kind = 2 group by user order by requests desc limit 30`,
   )
+  // the swap delegates decryption of every intent to its market makers
+  const marketMakers = all<{ delegate: string }>(
+    db,
+    `select delegate from delegation where delegator in (
+       select distinct address from hub_log where topic0 in (?, ?)
+     ) group by delegate order by min(block)`,
+    ...SWAP_CREATED,
+  ).map((d) => d.delegate)
+  const asked = db.prepare(
+    `select count(*) requests, coalesce(sum(handles), 0) handles, max(time) last
+     from gw_request where kind = 2 and user = ?`,
+  )
+  // who delegated to Merkl, and still does
+  const incentives = delegates.find((d) => d.delegate === MERKL_DELEGATE)
+  const standing = [
+    { address: SWAP_COMPLIANCE, role: 'compliance' as const },
+    ...marketMakers.map((address) => ({
+      address,
+      role: 'market maker' as const,
+    })),
+    ...(incentives
+      ? [
+          {
+            address: MERKL_DELEGATE,
+            role: 'incentives' as const,
+            accounts: incentives.delegators,
+          },
+        ]
+      : []),
+  ].map((r) => ({
+    ...r,
+    ...(asked.get(r.address) as {
+      requests: number
+      handles: number
+      last: number | null
+    }),
+  }))
+  const allowed = (
+    JSON.parse(getSync(db, 'allowed_readers') ?? '[]') as AllowedReader[]
+  ).map((r) => ({
+    ...r,
+    requests: (asked.get(r.address) as { requests: number }).requests,
+  }))
   return {
     trust: {
       kmsNodes: TRUST.kmsNodes,
@@ -1814,6 +1865,8 @@ export function readers(db: Db): ReadersSummary {
     delegates,
     observers: [...obs.values()],
     decryptors,
+    allowed,
+    standing,
   }
 }
 

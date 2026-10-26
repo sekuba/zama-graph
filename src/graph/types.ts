@@ -148,6 +148,12 @@ export interface Stats {
    * picked; when every other leg is provably zero, the pick is public
    */
   router: { deposits: number; revealed: number; legs: number; zero: number }
+  /**
+   * a swap intent hides its real order among decoys; once it moved funds,
+   * decoys whose legs are provably zero drop out, and one left is public;
+   * with both its legs known exactly, so is its price
+   */
+  swaps?: { finished: number; revealed: number; priced: number }
   /** accounts with a primary ENS or GNS name */
   named: {
     accounts: number
@@ -173,7 +179,7 @@ export interface TokenStats {
  * What the live view can be narrowed to, each a number on the scoreboard:
  * unwraps by what the public data proves about their funds, unwraps never
  * finalized, transfers whose amount it pins, router deposits that reveal
- * their vault, and accounts with a name.
+ * their vault, swaps that reveal their real order, and accounts with a name.
  */
 export const LIVE_FILTERS = [
   'all',
@@ -189,6 +195,7 @@ export const LIVE_FILTERS = [
   'pending',
   'pinned',
   'router',
+  'swap',
   'unwraps',
   'named',
 ] as const
@@ -581,6 +588,17 @@ export interface HandleDetail {
   sends: InputSend[]
   decryptable: { caller: string; time: number; tx: string } | null
   /**
+   * who a contract let use it (ACL Allowed): an account that signs can
+   * decrypt it, a contract only computes with it
+   */
+  allowed: {
+    account: string
+    contract: boolean
+    caller: string
+    time: number
+    tx: string
+  }[]
+  /**
    * an encrypted input: the address its proof binds it to, the contract it
    * is for, and the transaction that submitted it (encrypted offchain before)
    */
@@ -633,6 +651,18 @@ export interface TxDetail {
   }[]
 }
 
+/** An account a contract allowed to decrypt amounts of other accounts */
+export interface AllowedReader {
+  address: string
+  /** accounts, not contracts, some of whose amounts it may decrypt */
+  parties: number
+  handles: number
+  /** the contracts that allowed it, most first, with how many handles */
+  grantedBy: { address: string; handles: number }[]
+  first: number
+  last: number
+}
+
 export interface ReadersSummary {
   trust: {
     kmsNodes: number
@@ -666,6 +696,27 @@ export interface ReadersSummary {
     handles: number
     keys: number
     last: number
+  }[]
+  /**
+   * Accounts a contract allowed, through the ACL, to decrypt amounts of
+   * other accounts, from the last derive, with the decryptions they asked
+   * the Gateway for
+   */
+  allowed: (AllowedReader & { requests: number })[]
+  /**
+   * Addresses that read everyone using a contract, by its design: the
+   * swap's compliance address and its market makers, and Merkl, which the
+   * vault form shares balances with by default. Each decryption they ask
+   * for is a public request on the Gateway.
+   */
+  standing: {
+    address: string
+    role: 'compliance' | 'market maker' | 'incentives'
+    /** incentives: the accounts that delegated to it */
+    accounts?: number
+    requests: number
+    handles: number
+    last: number | null
   }[]
 }
 
@@ -714,16 +765,105 @@ export interface PriceLevel {
   }
 }
 
+export interface IntentLeg {
+  asset: string
+  amount: Amount
+  handle: string
+}
+
 export interface IntentRow {
   id: string
+  /** of ConfidentialSwap: 1 swaps one pair in an encrypted direction */
+  version: 1 | 2
   maker: string
   time: number
   /** candidate orders: one is real, which one is encrypted */
   candidates: { assetIn: string; assetOut: string }[]
+  /** the candidate the public data proves real */
+  real?: number
+  /** market makers allowed to quote, and the maker's own pick of them */
+  eligible?: number
+  restricted: string[]
+  /** market makers that quoted */
+  quoters: string[]
+  /** resolved before the quoting window closed: everyone allowed quoted */
+  early?: boolean
   taker?: string
   outcome: 'settled' | 'reclaimed' | 'open'
-  /** what moved per asset at settlement or reclaim */
-  legs: { asset: string; amount: Amount; handle: string }[]
+  /** the settlement or reclaim the legs are of */
+  legsOf?: 'settled' | 'reclaimed'
+  /** per asset: what the escrow paid the taker, or returned to the maker */
+  legs: IntentLeg[]
+  /** per asset: what the maker got, net of the fee */
+  got: IntentLeg[]
+  /** both real legs known exactly: what the maker sold and got, net of fee */
+  price?: { sold: string; got: string }
+  /** who asked the Gateway to decrypt what its events name, and what */
+  reads: IntentRead[]
+}
+
+export interface IntentRead {
+  /** the user who asked; none for a public decryption */
+  user?: string
+  /** amount, real order, quote, winner, success, sold, got, ... */
+  what: string[]
+  /** the first request */
+  time: number
+}
+
+export interface MarketMakerRow {
+  address: string
+  /** intents it quoted, alone, and settled */
+  quoted: number
+  sole: number
+  won: number
+  /** intents some of whose values it asked the Gateway to decrypt */
+  decrypted: number
+}
+
+/**
+ * A period's swap volume of one asset, made publicly decryptable: the sum
+ * of what every settlement in the period moved in the asset
+ */
+export interface VolumeReveal {
+  asset: string
+  from: number
+  to: number
+  time: number
+  tx: string
+  handle: string
+  total: Amount
+  /** settlements the total adds up, by what is known of each */
+  terms: number
+  zero: number
+  exact: number
+  /** the terms nothing pins: what the total still hides */
+  hidden: { intent?: string; maker?: string; handle: string; amount: Amount }[]
+  /** what the hidden terms add up to: the total less the known terms */
+  hiddenSum?: string
+}
+
+export interface SwapSummary {
+  intents: number
+  settled: number
+  reclaimed: number
+  /** settled or reclaimed, with decoys */
+  finished: number
+  /** of them, whose real order the public data proves */
+  revealed: number
+  /** of those, settled with both real legs known exactly: price public */
+  priced: number
+  /** intents some market maker quoted, and only one did */
+  quoted: number
+  sole: number
+  /** second version: intents only one market maker was allowed to quote */
+  single: number
+  makers: MarketMakerRow[]
+  /** who asked the Gateway to decrypt other makers' intents, and how many */
+  readers: { address: string; intents: number }[]
+  /** makers that asked to decrypt their own intents */
+  ownReaders: number
+  reveals: VolumeReveal[]
 }
 
 export interface HubDetail {
@@ -745,7 +885,9 @@ export interface HubDetail {
     winners: number
     levels: PriceLevel[]
   }
+  /** the newest intents of a swap */
   intents?: IntentRow[]
+  swap?: SwapSummary
 }
 
 /**

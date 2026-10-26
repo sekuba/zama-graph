@@ -1,14 +1,28 @@
-import { all, type Db, handleId, one } from '../db'
+import { all, type Db, handleHex, handleId, one } from '../db'
 import { wordBig } from '../eth/rpc'
 import { KNOWN, Op, TOPICS } from '../protocol'
-import { topicAddr, topicNum, words } from './hubs'
+import { SWAP_CREATED, topicAddr, topicNum, words } from './hubs'
+import { MAX64 } from './model'
 import { amounts, tokens } from './queries'
+import {
+  type End,
+  type Intent,
+  type Leg,
+  loadIntents,
+  outcome,
+  proofs,
+  volumeReveals,
+} from './swaps'
 import type {
   Amount,
   BatchRow,
   HubDetail,
+  IntentRead,
   IntentRow,
+  MarketMakerRow,
   PriceLevel,
+  SwapSummary,
+  VolumeReveal,
 } from './types'
 
 /** Rows of a hub view: the newest batches, intents, price levels */
@@ -68,8 +82,10 @@ export function hubDetail(db: Db, address: string): HubDetail | undefined {
   const has = (topic: string) => logs.some((l) => l.topic0 === topic)
   if (has(TOPICS.Joined)) detail.batches = batches(db, a, logs)
   if (has(TOPICS.BidSubmitted)) detail.auction = auction(db, a, logs)
-  if (has(TOPICS.IntentCreated) || has(TOPICS.IntentSettled)) {
-    detail.intents = intents(db, logs)
+  if (SWAP_CREATED.some(has)) {
+    const view = swapView(db, a)
+    detail.intents = view.intents
+    detail.swap = view.summary
   }
   // an auction holding wallet: show the auction it serves
   if (!detail.auction && detail.name === 'AuctionWallet') {
@@ -326,78 +342,232 @@ function auction(
   }
 }
 
-/** Static tuples of (pairId, direction, flag, assetIn, assetOut, eAmountIn) */
-function orders(data: string): { assetIn: string; assetOut: string }[] {
-  const w = words(data)
-  const offset = Number(wordBig(w[0] ?? '')) / 32
-  const n = Number(wordBig(w[offset] ?? ''))
-  const out: { assetIn: string; assetOut: string }[] = []
-  for (let i = 0; i < n; i++) {
-    const base = offset + 1 + i * 6
-    out.push({
-      assetIn: `0x${(w[base + 3] ?? '').slice(24)}`,
-      assetOut: `0x${(w[base + 4] ?? '').slice(24)}`,
-    })
+/**
+ * What a swap's events make public: its newest intents with what each
+ * moved, the real orders and prices the public data proves, who quoted and
+ * who decrypted what, and the volume totals it revealed with the
+ * settlements they add up
+ */
+function swapView(
+  db: Db,
+  swap: string,
+): { intents: IntentRow[]; summary: SwapSummary } {
+  const intents = loadIntents(db, swap)
+  const proof = proofs(db, intents)
+  const proven = new Map(intents.map((i) => [i, proof(i)]))
+  const newest = [...intents].sort((x, y) => y.time - x.time).slice(0, MAX_ROWS)
+  const reads = readsOf(db, intents)
+  const reveals = volumeReveals(db, swap, intents)
+  const amt = amounts(db, [
+    ...newest.flatMap((i) =>
+      i.ends.flatMap((e) => [...e.paid, ...e.got].map((l) => l.id ?? -1)),
+    ),
+    ...reveals.flatMap((r) => [r.total ?? -1, ...r.terms.map((t) => t.value)]),
+  ])
+  const amount = (id: number | undefined) =>
+    amt.get(id ?? -1) ?? ({ lo: '0' } as Amount)
+  const legs = (list: Leg[]) =>
+    list.map((l) => ({
+      asset: l.asset,
+      handle: l.handle,
+      amount: amount(l.id),
+    }))
+  // the settlement or reclaim that moved funds, else the first settlement
+  const shown = (i: Intent): End | undefined =>
+    proven.get(i)?.end ??
+    i.ends.find((e) => e.kind === 'settled') ??
+    i.ends.at(-1)
+  const rows: IntentRow[] = newest.map((i) => {
+    const e = shown(i)
+    return {
+      id: i.id,
+      version: i.version,
+      maker: i.maker,
+      time: i.time,
+      candidates: i.candidates,
+      real: proven.get(i)?.index,
+      eligible: i.eligible,
+      restricted: i.restricted,
+      quoters: i.quoters,
+      early: i.early,
+      taker: i.taker,
+      outcome: outcome(i),
+      legsOf: e?.kind,
+      legs: legs(e?.paid ?? []),
+      got: legs(e?.got ?? []),
+      price: price(proven.get(i)?.price),
+      reads: reads.get(i) ?? [],
+    }
+  })
+  const finished = intents.filter(
+    (i) => outcome(i) !== 'open' && i.candidates.length > 1,
+  )
+  return {
+    intents: rows,
+    summary: {
+      intents: intents.length,
+      settled: intents.filter((i) => outcome(i) === 'settled').length,
+      reclaimed: intents.filter((i) => outcome(i) === 'reclaimed').length,
+      finished: finished.length,
+      revealed: finished.filter((i) => proven.get(i)).length,
+      priced: finished.filter((i) => proven.get(i)?.price).length,
+      quoted: intents.filter((i) => i.quoters.length > 0).length,
+      sole: intents.filter((i) => i.quoters.length === 1).length,
+      single: intents.filter((i) => i.eligible === 1).length,
+      makers: marketMakers(intents, reads),
+      ...readers(intents, reads),
+      reveals: reveals.map((r) => volumeRow(db, r, amount)),
+    },
+  }
+}
+
+function price(p: { sold: bigint; got: bigint } | undefined) {
+  return p ? { sold: p.sold.toString(), got: p.got.toString() } : undefined
+}
+
+/**
+ * Who asked the Gateway to decrypt what each intent's events name. A user
+ * decryption names the user (a delegate asks in its own name); a public
+ * one names nobody.
+ */
+function readsOf(db: Db, intents: Intent[]): Map<Intent, IntentRead[]> {
+  const requests = db.prepare(
+    `select r.user, r.kind, r.time from gw_handle g join gw_request r on r.id = g.request
+     where g.handle = ?`,
+  )
+  const out = new Map<Intent, IntentRead[]>()
+  for (const i of intents) {
+    const by = new Map<
+      string,
+      { user?: string; what: Set<string>; time: number }
+    >()
+    for (const f of i.fields) {
+      const id = handleId(db, f.handle)
+      if (id === undefined) continue
+      for (const r of requests.all(id) as {
+        user: string | null
+        kind: number
+        time: number
+      }[]) {
+        const user = r.kind === 2 ? (r.user ?? undefined) : undefined
+        const key = user ?? 'public'
+        const e = by.get(key) ?? { user, what: new Set<string>(), time: r.time }
+        e.what.add(f.what)
+        e.time = Math.min(e.time, r.time)
+        by.set(key, e)
+      }
+    }
+    if (by.size > 0) {
+      out.set(
+        i,
+        [...by.values()]
+          .sort((x, y) => x.time - y.time)
+          .map((e) => ({ user: e.user, what: [...e.what], time: e.time })),
+      )
+    }
   }
   return out
 }
 
-/** (address[] assets, bytes32[] amounts) at the offsets in words i and j */
-function assetAmounts(data: string, i: number, j: number) {
-  const w = words(data)
-  const list = (k: number) => {
-    const at = Number(wordBig(w[k] ?? '')) / 32
-    const n = Number(wordBig(w[at] ?? ''))
-    return w.slice(at + 1, at + 1 + n)
+/** Who quoted the swap's intents, alone or not, settled and decrypted them */
+function marketMakers(
+  intents: Intent[],
+  reads: Map<Intent, IntentRead[]>,
+): MarketMakerRow[] {
+  const rows = new Map<string, MarketMakerRow>()
+  const row = (address: string) => {
+    let r = rows.get(address)
+    if (!r) {
+      r = { address, quoted: 0, sole: 0, won: 0, decrypted: 0 }
+      rows.set(address, r)
+    }
+    return r
   }
-  const assets = list(i).map((x) => `0x${x.slice(24)}`)
-  const handles = list(j)
-  return assets.map((asset, k) => ({ asset, handle: handles[k] ?? '' }))
-}
-
-function intents(db: Db, logs: HubLog[]): IntentRow[] {
-  const rows = new Map<string, IntentRow>()
-  const pending: {
-    row: IntentRow
-    legs: { asset: string; handle: string }[]
-  }[] = []
-  for (const l of logs) {
-    const t = l.topics.split(',')
-    const id = wordBig((t[0] ?? '').slice(2)).toString()
-    if (l.topic0 === TOPICS.IntentCreated) {
-      rows.set(id, {
-        id,
-        maker: topicAddr(t[1]),
-        time: l.time,
-        candidates: orders(l.data),
-        outcome: 'open',
-        legs: [],
-      })
-    } else if (l.topic0 === TOPICS.IntentSettled) {
-      // (eSucceed, assets[], eAmountIns[], eAmountOuts[]); maker, taker indexed
-      const row = rows.get(id)
-      if (!row) continue
-      row.outcome = 'settled'
-      row.taker = topicAddr(t[2])
-      pending.push({ row, legs: assetAmounts(l.data, 1, 2) })
-    } else if (l.topic0 === TOPICS.IntentReclaimed) {
-      // (eSucceed, assets[], eTransferred[]); maker indexed
-      const row = rows.get(id)
-      if (!row) continue
-      row.outcome = 'reclaimed'
-      pending.push({ row, legs: assetAmounts(l.data, 1, 2) })
+  for (const i of intents) {
+    for (const q of i.quoters) {
+      const r = row(q)
+      r.quoted++
+      if (i.quoters.length === 1) r.sole++
+    }
+    if (i.taker && i.ends.some((e) => e.kind === 'settled')) row(i.taker).won++
+  }
+  for (const i of intents) {
+    for (const r of reads.get(i) ?? []) {
+      const mm = r.user ? rows.get(r.user) : undefined
+      if (mm) mm.decrypted++
     }
   }
-  const ids = pending.flatMap((p) =>
-    p.legs.map((l) => handleId(db, l.handle) ?? -1),
-  )
-  const amt = amounts(db, ids)
-  for (const p of pending) {
-    p.row.legs = p.legs.map((l) => ({
-      asset: l.asset,
-      handle: l.handle,
-      amount: amt.get(handleId(db, l.handle) ?? -1) ?? { lo: '0' },
-    }))
+  return [...rows.values()].sort((x, y) => y.quoted - x.quoted)
+}
+
+/**
+ * Who asked the Gateway to decrypt other makers' intents, and how many
+ * makers decrypted their own
+ */
+function readers(
+  intents: Intent[],
+  reads: Map<Intent, IntentRead[]>,
+): Pick<SwapSummary, 'readers' | 'ownReaders'> {
+  const others = new Map<string, number>()
+  const own = new Set<string>()
+  for (const i of intents) {
+    for (const r of reads.get(i) ?? []) {
+      if (!r.user) continue
+      if (r.user === i.maker) own.add(r.user)
+      else others.set(r.user, (others.get(r.user) ?? 0) + 1)
+    }
   }
-  return [...rows.values()].sort((x, y) => y.time - x.time).slice(0, MAX_ROWS)
+  return {
+    readers: [...others.entries()]
+      .map(([address, n]) => ({ address, intents: n }))
+      .sort((x, y) => y.intents - x.intents),
+    ownReaders: own.size,
+  }
+}
+
+/**
+ * A volume reveal as the public data reads it: the revealed total, and
+ * each settlement's term in it as zero, known exactly, or still hidden.
+ * Below the cap no addition saturated, so the hidden terms add up to the
+ * total less the known ones.
+ */
+function volumeRow(
+  db: Db,
+  r: ReturnType<typeof volumeReveals>[number],
+  amount: (id: number | undefined) => Amount,
+): VolumeReveal {
+  const total = amount(r.total)
+  const exact = (a: Amount) => a.hi !== undefined && a.lo === a.hi
+  const terms = r.terms.map((t) => ({ t, a: amount(t.value) }))
+  const known = terms.filter((x) => exact(x.a))
+  const hidden = terms.filter((x) => !exact(x.a))
+  const hex = handleHex(db, [
+    ...(r.total !== undefined ? [r.total] : []),
+    ...hidden.map((x) => x.t.value),
+  ])
+  const sum = known.reduce((s, x) => s + BigInt(x.a.lo), 0n)
+  return {
+    asset: r.asset,
+    from: r.from,
+    to: r.to,
+    time: r.time,
+    tx:
+      one<{ hash: string }>(db, 'select hash from txn where id = ?', r.tx)
+        ?.hash ?? '',
+    handle: r.total !== undefined ? (hex.get(r.total) ?? '') : '',
+    total,
+    terms: terms.length,
+    zero: known.filter((x) => x.a.lo === '0').length,
+    exact: known.filter((x) => x.a.lo !== '0').length,
+    hidden: hidden.map((x) => ({
+      intent: x.t.intent?.id,
+      maker: x.t.intent?.maker,
+      handle: hex.get(x.t.value) ?? '',
+      amount: x.a,
+    })),
+    hiddenSum:
+      exact(total) && BigInt(total.lo) < MAX64 && BigInt(total.lo) >= sum
+        ? (BigInt(total.lo) - sum).toString()
+        : undefined,
+  }
 }

@@ -1,13 +1,8 @@
 import { all, type Db, getSync, handleId } from '../db'
 import { KNOWN } from '../protocol'
-import {
-  type Hub,
-  hubModes,
-  memberPools,
-  poolReturns,
-  type Returns,
-} from './hubs'
+import { type Hub, hubModes, memberPools, type Returns } from './hubs'
 import { type Ev, type Ledger, loadLedger, MAX64, ZERO } from './model'
+import { allReturns } from './swaps'
 import { history, type Mode } from './traces'
 import type { Amount, HistoryEdge, HistoryGraph, HistoryNode } from './types'
 
@@ -41,7 +36,7 @@ export function currentLedger(db: Db): Cached {
       ledger,
       hubs,
       modeOf: hubModes(rows, memberPools(db)),
-      returns: poolReturns(db, ledger),
+      returns: allReturns(db, ledger),
       unwrapAt: new Map([...ledger.unwraps].map(([at, u]) => [u.handle, at])),
     }
   }

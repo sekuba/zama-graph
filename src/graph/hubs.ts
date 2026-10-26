@@ -77,21 +77,25 @@ function auctionWallets(db: Db): Set<string> {
   )
 }
 
+/** `IntentCreated` of both ConfidentialSwap versions: the maker is topic 2 */
+export const SWAP_CREATED = [TOPICS.IntentCreated, TOPICS.IntentCreatedV1]
+
 /**
  * The swap's escrow wallets: unverified clones, each shared by the intents
- * of many makers. A maker pays every candidate order of an intent into one,
- * in the transaction of its `IntentCreated`.
+ * of many makers. A maker pays every candidate order of an intent (in the
+ * first version, both assets of the pair) into one, in the transaction of
+ * its `IntentCreated`.
  */
-function swapEscrows(db: Db): Set<string> {
+export function swapEscrows(db: Db): Set<string> {
   return new Set(
     all<{ address: string }>(
       db,
       `select address from account where kind = 'contract' and name = 'EscrowWallet'
        union select distinct x.dst from xfer x join hub_log h on h.tx = x.tx
-       where h.topic0 = ?1 and x.src = '0x' || substr(h.topics, 94, 40)
-         and x.dst <> ?2
+       where h.topic0 in (?1, ?2) and x.src = '0x' || substr(h.topics, 94, 40)
+         and x.dst <> ?3
          and x.dst in (select address from account where kind = 'contract')`,
-      TOPICS.IntentCreated,
+      ...SWAP_CREATED,
       ZERO,
     ).map((r) => r.address),
   )
@@ -271,8 +275,9 @@ export function poolReturns(db: Db, ledger: Ledger): Returns {
 /**
  * How a history walk treats each address: the vault router is walked
  * through (its balance is provably empty after each of its transactions);
- * a member pool is followed through a member's own payments; every other
- * hub is a stop.
+ * a member pool is followed through a member's own payments, and a swap
+ * escrow through the payments its intents tie each payout to
+ * (`escrowReturns`); every other hub is a stop.
  */
 export function hubModes(
   hubs: Iterable<Hub>,
@@ -282,7 +287,11 @@ export function hubModes(
   for (const h of hubs) {
     modes.set(
       h.address,
-      h.kind === 'router' ? 'enter' : pools.has(h.address) ? 'member' : 'stop',
+      h.kind === 'router'
+        ? 'enter'
+        : pools.has(h.address) || h.kind === 'swap'
+          ? 'member'
+          : 'stop',
     )
   }
   return (a) => modes.get(a) ?? (pools.has(a) ? 'member' : 'enter')
@@ -324,7 +333,7 @@ export function deriveHubs(db: Db): Map<string, Hub> {
     )
   const batchers = byTopic(TOPICS.Joined)
   const auctions = byTopic(TOPICS.BidSubmitted)
-  const swaps = byTopic(TOPICS.IntentCreated)
+  const swaps = new Set(SWAP_CREATED.flatMap((t) => [...byTopic(t)]))
   const escrows = swapEscrows(db)
   const hubs = new Map<string, Hub>()
   for (const c of counts) {

@@ -109,6 +109,8 @@ export const TOPICS = {
   Transfer:
     '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef',
   // ACL
+  /** Allowed(address indexed caller, address indexed account, bytes32 handle): `account` may now use the handle, and decrypt it if it can sign */
+  Allowed: '0xe2e1decee6e05ee246cd7c7f1337d25cdfd41dcbdcf8c57b61630be56cc7366a',
   /** AllowedForDecryption(address indexed caller, bytes32[] handlesList): anyone may now ask the KMS to decrypt these */
   AllowedForDecryption:
     '0xd913ac93a959116526793ef772233273d5249597d33cddfdc34f29920541fd0a',
@@ -141,12 +143,14 @@ export const TOPICS = {
     '0x63f3c1dfe868c93b4c1f789017d37f86d91f0df374cd4f16155c54dba820cb20',
   TokenRefunded:
     '0x8e79a06e8fa190d30622f1bd34864445aecf3656a9469472e05a204eadc2f4fe',
-  // ConfidentialSwap
-  /** IntentCreated(uint256 indexed intentId, address indexed maker, (uint128 pairId, uint8 direction, bool, address assetIn, address assetOut, bytes32 eAmountIn)[] orders, bytes32 eRealIndex, ...) */
+  // ConfidentialSwap: one real order among decoy candidates
+  /** IntentCreated(uint256 indexed intentId, address indexed maker, (uint128 pairId, uint8 feeShift, bool fromAsset0To1, address assetIn, address assetOut, bytes32 eAmountIn)[] orders, bytes32 eRealIndex, bytes32 eAmountOutMin, uint64 quotingEndsAtBlock, uint64 settlementEndsAtBlock, uint32 marketMakerCount, address marketMakerDecryptionAccess, address[] marketMakers, bytes32 eIsFunded) */
   IntentCreated:
     '0x3a5afa894b934d042b20bcd6e25a8581bbb6ec43f4545afbff1e5ee37699dae5',
+  /** IntentSettled(uint256 indexed intentId, bytes32 eSucceed, address indexed maker, address indexed taker, address[] assets, bytes32[] eAmountIns, bytes32[] eAmountOuts) */
   IntentSettled:
     '0x6a0b861ca342ec2fb70bd11697fcacee627ab12c09c94a927af68740619a1f42',
+  /** IntentReclaimed(uint256 indexed intentId, address indexed maker, bytes32 eSucceed, address[] assets, bytes32[] eTransferred) */
   IntentReclaimed:
     '0xe2084892a9fadcab87201882539d1d936d5db4caf25d21857cf549a261fd104b',
   /** IntentQuoted(uint256 indexed intentId, address indexed marketMaker, bytes32[] eQuotes, bytes32 eIndexMask) */
@@ -155,9 +159,25 @@ export const TOPICS = {
   /** IntentResolved(uint256 indexed intentId, bytes32 eBestQuoter, bytes32 eMaskedIndex, bool earlyResolved) */
   IntentResolved:
     '0x6c9d616abbef2873c9959fd02f56c2cc51c76c60a7fbeb03091030dc271dfdfc',
-  /** AnalyticsRevealed(address indexed asset, bytes32 eTotalVolume, uint64 fromTimestamp, uint64 toTimestamp): a period's swap volume of an asset, made publicly decryptable */
+  /** AnalyticsRevealed(address indexed asset, bytes32 eTotalVolume, uint64 fromTimestamp, uint64 toTimestamp): a period's swap volume of an asset, made publicly decryptable (both versions) */
   AnalyticsRevealed:
     '0xbd2b96fe93b1f1c2c80a09e010bc61be58deee5e3dc6a85f62c9646549b95d6a',
+  // ConfidentialSwap, first version: one pair, an encrypted direction
+  /** IntentCreated(uint256 indexed intentId, address indexed maker, uint256 indexed pairId, bytes32 eFromAsset0To1, bytes32 eAmountIn, bytes32 eAmountOutMin, uint64 quotingEndsAtBlock, uint64 settlementEndsAtBlock, address marketMakerDecryptionAccess) */
+  IntentCreatedV1:
+    '0x81ea304264971bc8e321d065717bf7f394f87c512d8cda104be70ae765ebfbb9',
+  /** IntentSettled(uint256 indexed intentId, bytes32 eSucceed, address indexed maker, address indexed taker, uint256 pairId, bytes32 eAmountIn, bytes32 eAmountOut) */
+  IntentSettledV1:
+    '0x9be1b1bab9f8f8637ed3437a5c8f4be52af091c5004b9b3d94e876a9d1c7fec3',
+  /** IntentReclaimed(uint256 indexed intentId, address indexed maker, bytes32 eSucceed, bytes32 eTransferred) */
+  IntentReclaimedV1:
+    '0xebdcf09211f18622353ccadff336ced0fd2e4ab5a24977a5a83c618693de2f68',
+  /** IntentQuoted(uint256 indexed intentId, address indexed marketMaker, bytes32 eAmountOutQuoted) */
+  IntentQuotedV1:
+    '0x1d4ab2caa9f11927761e8a922b2164adbb62eae3ee598439edf95a9204ec3efd',
+  /** IntentResolved(uint256 indexed intentId, bytes32 eBestQuoter) */
+  IntentResolvedV1:
+    '0x204c671d07c95375c6c42fc9361704058107db1ed8e70f3b4be62c6c501e21d4',
   // Gateway Decryption
   /** PublicDecryptionRequest(uint256 indexed decryptionId, (bytes32 ctHandle, uint256 keyId, bytes32 snsCiphertextDigest, address[] coprocessorTxSenders)[] snsCtMaterials, bytes extraData) */
   PublicDecryptionRequest:
@@ -331,6 +351,18 @@ export const TRUST = {
   coprocessorThreshold: 3,
 }
 
+/**
+ * The compliance address of both ConfidentialSwap deployments: it can
+ * decrypt every intent, quote and settlement (`complianceAddress()`)
+ */
+export const SWAP_COMPLIANCE = '0x9b828219ad863491eb9b5225ae2d133eedea9b71'
+
+/**
+ * Merkl's delegate for confidential vault incentives, inferred from the
+ * public data (see its KNOWN entry): the address is not published
+ */
+export const MERKL_DELEGATE = '0xce320b9a35abfd95602b8f272b2730e5633a7337'
+
 /** Zama's hosted relayer: public decryption requests, with an API key */
 export const ZAMA_RELAYER_URL = 'https://relayer.mainnet.zama.org'
 
@@ -339,7 +371,15 @@ export const ZAMA_RELAYER_URL = 'https://relayer.mainnet.zama.org'
  * Contracts that interact with the wrappers are labelled at sync time from
  * their verified name on Etherscan (src/eth/contracts.ts).
  */
-export const KNOWN: Record<string, { label: string; source: string }> = {
+export const KNOWN: Record<
+  string,
+  {
+    label: string
+    source: string
+    /** not Zama's: a third party, and how its identity is known */
+    outside?: true
+  }
+> = {
   [HOST.dao]: {
     label: 'ZamaGovCore (owner of every wrapper, run by two multisigs)',
     source: 'owner()',
@@ -348,9 +388,9 @@ export const KNOWN: Record<string, { label: string; source: string }> = {
     label: 'ZamaDeFiGovCore (owner of the swap and the vault batchers)',
     source: 'owner() of every batcher, DEFAULT_ADMIN_ROLE of ConfidentialSwap',
   },
-  '0x9b828219ad863491eb9b5225ae2d133eedea9b71': {
+  [SWAP_COMPLIANCE]: {
     label: 'Swap compliance (can decrypt every swap)',
-    source: 'complianceAddress() of ConfidentialSwap',
+    source: 'complianceAddress() of both ConfidentialSwap deployments',
   },
   '0x3db098436a9bd4dfd285d2289bac1f2cdb3f374e': {
     label: 'Zama vault operator (deploys and dispatches batchers)',
@@ -368,8 +408,18 @@ export const KNOWN: Record<string, { label: string; source: string }> = {
     label: 'Zama ConfidentialSwap',
     source: 'ConfidentialSwap, verified on Etherscan',
   },
+  '0x2827eed03e8b8005bdf0e2e5901e062a27b7ce67': {
+    label: 'Zama ConfidentialSwap (first version)',
+    source: 'ConfidentialSwap, verified; intents from 2026-07-22 to 2026-09-15',
+  },
   '0x04a5b8c32f9c38092b008a4939f1f91d550c4345': {
     label: 'ZAMA token auction',
     source: 'AuctionToken, verified on Etherscan',
+  },
+  [MERKL_DELEGATE]: {
+    label: 'Merkl (inferred)',
+    source:
+      "inferred, not published: Zama's vault form shares a depositor's balance with Merkl for a year by default, and this address holds one-year user-decryption delegations on exactly the vault tokens Merkl's ZAMA_ERC7984 campaigns reward (api.merkl.xyz), and asks the Gateway to decrypt them",
+    outside: true,
   },
 }

@@ -11,6 +11,11 @@ export interface DagOp {
   c: number | null
   k: bigint | null
   r: number
+  /**
+   * an xor whose operands never both have a bit set, so it is their sum:
+   * a contract merging values of which at most one is nonzero
+   */
+  sum?: true
 }
 
 /** What the propagation knows of a handle: lo <= value <= hi */
@@ -419,6 +424,11 @@ export function propagate(
         else if (L(o.a) === H(o.a) && b.lo === b.hi) {
           const v = L(o.a) ^ b.lo
           set(r, v, v)
+        } else if (o.sum) {
+          // no shared bit: the sum, which cannot wrap
+          if (b.hi === 0n) alias(r, o.a)
+          else if (H(o.a) === 0n) alias(r, o.b)
+          set(r, L(o.a) + b.lo, min(H(o.a) + b.hi, mr))
         } else set(r, 0n, ceilMask(max(H(o.a), b.hi)))
         return
       }
@@ -494,6 +504,14 @@ export function propagate(
       case Op.Add: {
         const b = rhs(o)
         if (H(o.a) + b.hi > M(r)) return
+        set(o.a, rl - b.hi, rh - b.lo)
+        if (o.b !== null) set(o.b, rl - H(o.a), rh - L(o.a))
+        return
+      }
+      case Op.Xor: {
+        // operands without a shared bit add up to the result
+        if (!o.sum) return
+        const b = rhs(o)
         set(o.a, rl - b.hi, rh - b.lo)
         if (o.b !== null) set(o.b, rl - H(o.a), rh - L(o.a))
         return

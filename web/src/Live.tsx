@@ -40,6 +40,10 @@ const FILTERS: Record<LiveFilter, [label: string, title: string]> = {
     'vault revealed',
     'router deposits whose other legs are provably zero',
   ],
+  swap: [
+    'swap revealed',
+    'what makers sold and got in swaps whose decoy orders provably moved nothing',
+  ],
 }
 const TABS: LiveFilter[] = ['unwraps', 'linked', 'several', 'all']
 
@@ -168,9 +172,9 @@ function Linkability({ s }: { s: Stats }) {
         <details className="mt-3 text-xs text-ink-2">
           <summary>How</summary>
           <p className="mt-2 max-w-lg">
-            Public links and deposit / withdrawal amounts prove the funding address.
-	    One depositor can make several deposits. Includes pending requests,
-            excludes zero withdrawals.{' '}
+            Public links and deposit / withdrawal amounts prove the funding
+            address. One depositor can make several deposits. Includes pending
+            requests, excludes zero withdrawals.{' '}
             <a href="#about" className="underline">
               Method &amp; sources
             </a>
@@ -288,7 +292,7 @@ function Scoreboard({ s, filter }: { s: Stats; filter: LiveFilter }) {
       <Card
         title="Amounts"
         href="#pinned"
-        on={on('pinned', 'pending', 'router')}
+        on={on('pinned', 'pending', 'router', 'swap')}
       >
         <Stat
           value={pct(t.exact, t.total)}
@@ -334,6 +338,17 @@ function Scoreboard({ s, filter }: { s: Stats; filter: LiveFilter }) {
                 text={`${n(s.router.revealed)} of ${n(s.router.deposits)}`}
               />{' '}
               deposits through the vault router reveal which vault they went to
+            </li>
+          )}
+          {s.swaps && s.swaps.finished > 0 && (
+            <li>
+              <Fact
+                f="swap"
+                filter={filter}
+                text={`${n(s.swaps.revealed)} of ${n(s.swaps.finished)}`}
+              />{' '}
+              swaps reveal which of their candidate orders was the real one
+              {s.swaps.priced > 0 && `, ${n(s.swaps.priced)} their exact price`}
             </li>
           )}
         </Facts>
