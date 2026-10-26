@@ -639,6 +639,7 @@ export interface ReadersSummary {
     publicThreshold: number
     userThreshold: number
     coprocessors: number
+    coprocessorThreshold: number
   }
   delegates: {
     delegate: string

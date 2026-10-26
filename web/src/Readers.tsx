@@ -6,6 +6,9 @@ import { Address, Loading, Muted, Section } from './ui'
 const KMS_OPERATORS =
   'Zama, Dfns, Figment, Fireblocks, InfStones, Unit410, LayerZero, Ledger, Omakase, Stake Capital, OpenZeppelin, Etherscan and Conduit'
 
+/** Coprocessor operators, as Zama lists them (protocol-registry, mainnet.md) */
+const COPROCESSOR_OPERATORS = 'Artifact, Blockscape, Luganodes, P2P and Zama'
+
 /**
  * Who besides an account can read its balances: the KMS, which can read
  * everything; addresses an account delegated decryption to; observers a
@@ -29,10 +32,9 @@ export function Readers() {
             </mark>
           </li>
           <li>
-            {r.trust.coprocessors === 1
-              ? 'One coprocessor, run by Zama,'
-              : `${r.trust.coprocessors} coprocessors`}{' '}
-            computes every result.
+            {r.trust.coprocessors} coprocessors compute every result:{' '}
+            {COPROCESSOR_OPERATORS}. Ethereum accepts an encrypted input that{' '}
+            {r.trust.coprocessorThreshold} of them sign.
           </li>
         </ul>
       </Section>

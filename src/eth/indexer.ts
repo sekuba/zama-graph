@@ -43,6 +43,9 @@ const HUB_TOPICS = [
   TOPICS.IntentCreated,
   TOPICS.IntentSettled,
   TOPICS.IntentReclaimed,
+  TOPICS.IntentQuoted,
+  TOPICS.IntentResolved,
+  TOPICS.AnalyticsRevealed,
 ]
 
 /**
@@ -128,7 +131,7 @@ async function rediscover(db: Db, rpc: JsonRpc): Promise<void> {
  * Bumped when HUB_TOPICS changes: the pooling events of every caller are
  * fetched again over the indexed history (existing rows are kept)
  */
-const HUB_TOPICS_VERSION = '2'
+const HUB_TOPICS_VERSION = '3'
 
 async function refetchHubLogs(db: Db, rpc: JsonRpc): Promise<void> {
   const done = Number(getSync(db, 'eth_block') ?? 0)

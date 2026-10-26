@@ -1689,6 +1689,8 @@ function hubLabel(
     case 'VaultBatcherConfidentialRouter':
       return 'vault router'
   }
+  // the escrows are unverified clones
+  if (h.kind === 'swap' && !h.name) return 'swap escrow'
   return h.name ?? h.kind
 }
 
@@ -1807,6 +1809,7 @@ export function readers(db: Db): ReadersSummary {
       publicThreshold: TRUST.publicThreshold,
       userThreshold: TRUST.userThreshold,
       coprocessors: TRUST.coprocessors,
+      coprocessorThreshold: TRUST.coprocessorThreshold,
     },
     delegates,
     observers: [...obs.values()],

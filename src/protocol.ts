@@ -3,11 +3,13 @@
  * indexer relies on. Every value was verified against onchain state, the
  * verified sources on Etherscan, or the Zama repositories at the commits
  * named below (fhevm tag v0.13.0 = 129333b9, protocol-apps 02333309,
- * openzeppelin-confidential-contracts v0.5.3).
+ * openzeppelin-confidential-contracts v0.5.3). The FHEVMExecutor v0.5.0
+ * upgrade (2026-10-05) and the Gateway upgrades of 2026-10-08 kept every
+ * event decoded here.
  *
  * Zama confidential tokens are ERC-7984 wrappers of ERC-20 tokens. A
- * balance is a 32-byte handle that names a ciphertext held by Zama's
- * coprocessor. Every FHE operation on handles is an FHEVMExecutor event
+ * balance is a 32-byte handle that names a ciphertext held by the
+ * coprocessors. Every FHE operation on handles is an FHEVMExecutor event
  * naming its operands and its result, and every transfer is a public
  * `ConfidentialTransfer(from, to, amountHandle)` event. So the address graph
  * is fully public, and every amount is a public expression over clear
@@ -21,7 +23,7 @@ export const GATEWAY_CHAIN_ID = 261131
 export const EXPLORER = 'https://etherscan.io'
 export const GATEWAY_EXPLORER = 'https://explorer.mainnet.zama.org'
 
-/** Host contracts on Ethereum (all UUPS proxies, owned by the Zama DAO) */
+/** Host contracts on Ethereum (all UUPS proxies, owned by ZamaGovCore) */
 export const HOST = {
   acl: '0xca2e8f1f656cd25c01f05d0b243ab1ecd4a8ffb6',
   executor: '0xd82385dada1ae3e969447f20a3164f6213100e75',
@@ -30,7 +32,10 @@ export const HOST = {
   protocolConfig: '0xd8236b57394f90726b26ab25d38ceac776e1a7c4',
   /** ConfidentialTokenWrappersRegistry, lists the official wrappers */
   registry: '0xeb5015ff021db115ace010f23f55c2591059bba0',
-  /** Aragon DAO that owns every wrapper and can upgrade it instantly */
+  /**
+   * ZamaGovCore, an Aragon governance contract run by two multisigs, owns
+   * every wrapper and can upgrade it instantly
+   */
   dao: '0xb6d69d5f334d8b97b194617b53c6ab62f8681ef3',
 } as const
 
@@ -144,6 +149,15 @@ export const TOPICS = {
     '0x6a0b861ca342ec2fb70bd11697fcacee627ab12c09c94a927af68740619a1f42',
   IntentReclaimed:
     '0xe2084892a9fadcab87201882539d1d936d5db4caf25d21857cf549a261fd104b',
+  /** IntentQuoted(uint256 indexed intentId, address indexed marketMaker, bytes32[] eQuotes, bytes32 eIndexMask) */
+  IntentQuoted:
+    '0xfc9a866a4cd2f0de459626b8fd37e0c01696ed58df42833866559f065c805ff9',
+  /** IntentResolved(uint256 indexed intentId, bytes32 eBestQuoter, bytes32 eMaskedIndex, bool earlyResolved) */
+  IntentResolved:
+    '0x6c9d616abbef2873c9959fd02f56c2cc51c76c60a7fbeb03091030dc271dfdfc',
+  /** AnalyticsRevealed(address indexed asset, bytes32 eTotalVolume, uint64 fromTimestamp, uint64 toTimestamp): a period's swap volume of an asset, made publicly decryptable */
+  AnalyticsRevealed:
+    '0xbd2b96fe93b1f1c2c80a09e010bc61be58deee5e3dc6a85f62c9646549b95d6a',
   // Gateway Decryption
   /** PublicDecryptionRequest(uint256 indexed decryptionId, (bytes32 ctHandle, uint256 keyId, bytes32 snsCiphertextDigest, address[] coprocessorTxSenders)[] snsCtMaterials, bytes extraData) */
   PublicDecryptionRequest:
@@ -303,17 +317,18 @@ export const GATEWAY_FEES = {
 
 /**
  * KMS and coprocessor set at the time of writing (GatewayConfig, KMSVerifier,
- * InputVerifier on 2026-10-02): 13 KMS nodes, 7 of them can publicly
- * decrypt, 9 can re-encrypt for a user; one coprocessor, run by Zama,
- * signs every input and computes every ciphertext. The live values are read
- * by the readers view.
+ * InputVerifier on 2026-10-26): 13 KMS nodes, 7 of them can publicly
+ * decrypt, 9 can re-encrypt for a user. Five coprocessors compute every
+ * ciphertext; Ethereum accepts an input signed by 3 of them (1 of 1 until
+ * 2026-10-22), and the Gateway commits a ciphertext 3 of them agree on, its
+ * priority coprocessor being off.
  */
 export const TRUST = {
   kmsNodes: 13,
   publicThreshold: 7,
   userThreshold: 9,
-  coprocessors: 1,
-  coprocessorThreshold: 1,
+  coprocessors: 5,
+  coprocessorThreshold: 3,
 }
 
 /** Zama's hosted relayer: public decryption requests, with an API key */
@@ -325,7 +340,18 @@ export const ZAMA_RELAYER_URL = 'https://relayer.mainnet.zama.org'
  * their verified name on Etherscan (src/eth/contracts.ts).
  */
 export const KNOWN: Record<string, { label: string; source: string }> = {
-  [HOST.dao]: { label: 'Zama DAO (owner of every wrapper)', source: 'owner()' },
+  [HOST.dao]: {
+    label: 'ZamaGovCore (owner of every wrapper, run by two multisigs)',
+    source: 'owner()',
+  },
+  '0x31bbd7a242a38372de92ca304fe29c12c90a382c': {
+    label: 'ZamaDeFiGovCore (owner of the swap and the vault batchers)',
+    source: 'owner() of every batcher, DEFAULT_ADMIN_ROLE of ConfidentialSwap',
+  },
+  '0x9b828219ad863491eb9b5225ae2d133eedea9b71': {
+    label: 'Swap compliance (can decrypt every swap)',
+    source: 'complianceAddress() of ConfidentialSwap',
+  },
   '0x3db098436a9bd4dfd285d2289bac1f2cdb3f374e': {
     label: 'Zama vault operator (deploys and dispatches batchers)',
     source: 'deployer of every vault batcher, sender of dispatchBatch',

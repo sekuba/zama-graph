@@ -77,6 +77,26 @@ function auctionWallets(db: Db): Set<string> {
   )
 }
 
+/**
+ * The swap's escrow wallets: unverified clones, each shared by the intents
+ * of many makers. A maker pays every candidate order of an intent into one,
+ * in the transaction of its `IntentCreated`.
+ */
+function swapEscrows(db: Db): Set<string> {
+  return new Set(
+    all<{ address: string }>(
+      db,
+      `select address from account where kind = 'contract' and name = 'EscrowWallet'
+       union select distinct x.dst from xfer x join hub_log h on h.tx = x.tx
+       where h.topic0 = ?1 and x.src = '0x' || substr(h.topics, 94, 40)
+         and x.dst <> ?2
+         and x.dst in (select address from account where kind = 'contract')`,
+      TOPICS.IntentCreated,
+      ZERO,
+    ).map((r) => r.address),
+  )
+}
+
 export function memberPools(db: Db): Pools {
   const auction = auctionWallets(db)
   const batchers = new Map<string, { token: string; excluded: Set<string> }>()
@@ -270,8 +290,9 @@ export function hubModes(
 
 /**
  * The contracts where many users' funds meet: vault batchers, the vault
- * router, the ZAMA auction and its holding wallets, the swap, and any other
- * contract with many counterparties. A trace does not walk through them:
+ * router, the ZAMA auction and its holding wallets, the swap's escrows,
+ * and any other contract with many counterparties. A swap escrow is one
+ * however few makers used it so far. A trace does not walk through them:
  * their events still name who put in and who took out, but which deposit
  * paid for which withdrawal is decided inside them, in FHE.
  */
@@ -304,13 +325,14 @@ export function deriveHubs(db: Db): Map<string, Hub> {
   const batchers = byTopic(TOPICS.Joined)
   const auctions = byTopic(TOPICS.BidSubmitted)
   const swaps = byTopic(TOPICS.IntentCreated)
+  const escrows = swapEscrows(db)
   const hubs = new Map<string, Hub>()
   for (const c of counts) {
     const kind: HubKind = batchers.has(c.address)
       ? 'batcher'
       : auctions.has(c.address)
         ? 'auction'
-        : swaps.has(c.address)
+        : swaps.has(c.address) || escrows.has(c.address)
           ? 'swap'
           : /router/i.test(KNOWN[c.address]?.label ?? '')
             ? 'router'
